@@ -24,11 +24,11 @@ def _cmd_screen(args: argparse.Namespace) -> int:
                           threshold_km=args.threshold)
     elapsed = time.perf_counter() - t0
 
-    events = [c for c in conjunctions if not c.persistent]
-    persistent = [c for c in conjunctions if c.persistent]
+    events = [c for c in conjunctions if not c.co_orbital]
+    co_orbital = [c for c in conjunctions if c.co_orbital]
     print(f"\nScreened {len(catalog)} objects over {args.hours:g} h in {elapsed:.1f} s")
     print(f"{len(events)} conjunctions < {args.threshold:g} km "
-          f"(+{len(persistent)} persistent pairs, e.g. formation flying)\n")
+          f"(+{len(co_orbital)} co-orbital pairs flying in formation)\n")
     print(f"{'TCA (UTC)':<20} {'miss km':>8} {'v_rel km/s':>10}  objects")
     for c in events[:args.top]:
         print(f"{c.tca:%Y-%m-%d %H:%M:%S} {c.miss_distance_km:8.3f} {c.relative_speed_km_s:10.2f}  "

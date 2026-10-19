@@ -27,6 +27,9 @@ log = logging.getLogger(__name__)
 MAX_REL_SPEED_KM_S = 15.8
 # Slack for curvature error in the linear pre-filter; generous on purpose.
 LINEAR_FILTER_MARGIN_KM = 2.0
+# Below this relative speed two objects are flying together (same plane, formation,
+# docked) rather than crossing; such pairs are reported separately.
+CO_ORBITAL_SPEED_KM_S = 0.1
 
 
 @dataclass
@@ -38,7 +41,7 @@ class Conjunction:
     tca: datetime
     miss_distance_km: float
     relative_speed_km_s: float
-    persistent: bool  # stays inside the screening radius for the whole window (formation flying, docked)
+    co_orbital: bool
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -133,25 +136,25 @@ def screen(
     last_step = len(offsets) - 1
     results = []
     for i, j, steps, dists in _encounters(hits):
-        persistent = steps[0] == 0 and steps[-1] == last_step
         k = steps[np.argmin(dists)]
         lo, hi = offsets[max(k - 1, 0)], offsets[min(k + 1, last_step)]
         t_s, miss = _refine_tca(catalog.satrecs[i], catalog.satrecs[j], jd, fr, lo, hi)
         if miss > threshold_km:
             continue
-        # A minimum on the window edge is an approach that started before/after the window.
-        at_edge = t_s <= offsets[0] + 1e-2 or t_s >= offsets[-1] - 1e-2
-        if at_edge and not persistent:
-            continue
         tca = start + timedelta(seconds=t_s)
         _, v1 = propagate_one(catalog.satrecs[i], tca)
         _, v2 = propagate_one(catalog.satrecs[j], tca)
+        rel_speed = float(np.linalg.norm(v1 - v2))
+        co_orbital = rel_speed < CO_ORBITAL_SPEED_KM_S
+        # A minimum on the window edge is an approach that started before/after the window.
+        at_edge = t_s <= offsets[0] + 1e-2 or t_s >= offsets[-1] - 1e-2
+        if at_edge and not co_orbital:
+            continue
         results.append(Conjunction(
             norad_id_1=int(catalog.norad_ids[i]), name_1=catalog.names[i],
             norad_id_2=int(catalog.norad_ids[j]), name_2=catalog.names[j],
             tca=tca, miss_distance_km=miss,
-            relative_speed_km_s=float(np.linalg.norm(v1 - v2)),
-            persistent=bool(persistent),
+            relative_speed_km_s=rel_speed, co_orbital=co_orbital,
         ))
     results.sort(key=lambda c: c.miss_distance_km)
     return results
