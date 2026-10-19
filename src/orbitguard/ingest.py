@@ -73,6 +73,15 @@ def fetch_group(
     resp = requests.get(
         CELESTRAK_GP_URL, params={"GROUP": group, "FORMAT": "json"}, timeout=60
     )
+    if resp.status_code == 403:
+        # CelesTrak blocks clients that re-download unchanged data too often.
+        if cached:
+            log.warning("CelesTrak refused %r (rate limit); using stale cache %s", group, cached[-1].name)
+            return validate_records(json.loads(cached[-1].read_text()))
+        raise RuntimeError(
+            f"CelesTrak refused group {group!r} (403). It rate-limits repeat downloads; "
+            "wait up to 2 hours and retry."
+        )
     resp.raise_for_status()
     try:
         records = resp.json()
