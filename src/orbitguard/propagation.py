@@ -29,13 +29,14 @@ class Catalog:
     def __len__(self) -> int:
         return len(self.satrecs)
 
-    def propagate(self, start: datetime, offsets_s: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return TEME positions (n_sat, n_time, 3) in km and a validity mask (n_sat, n_time)."""
+    def propagate(self, start: datetime, offsets_s: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return TEME positions (km) and velocities (km/s), both (n_sat, n_time, 3),
+        and a validity mask (n_sat, n_time)."""
         jd, fr = _julian(start)
         fr_arr = fr + np.asarray(offsets_s, dtype=float) / 86400.0
         jd_arr = np.full_like(fr_arr, jd)
-        err, r, _ = self._array.sgp4(jd_arr, fr_arr)
-        return r, err == 0
+        err, r, v = self._array.sgp4(jd_arr, fr_arr)
+        return r, v, err == 0
 
 
 def _julian(t: datetime) -> tuple[float, float]:
