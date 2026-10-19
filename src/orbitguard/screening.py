@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 # Head-on collision of two objects in LEO: about 2 x 7.8 km/s.
 MAX_REL_SPEED_KM_S = 15.8
+# Slack for curvature error in the linear pre-filter; generous on purpose.
+LINEAR_FILTER_MARGIN_KM = 2.0
 
 
 @dataclass
@@ -44,22 +46,43 @@ class Conjunction:
         return d
 
 
-def _collect_hits(catalog: Catalog, start: datetime, offsets_s: np.ndarray,
-                  radius_km: float, chunk_steps: int) -> np.ndarray:
-    """Return rows (step, i, j, distance_km) for every pair within radius at every step."""
+def _linear_min_distance(dr: np.ndarray, dv: np.ndarray, max_dt: float) -> np.ndarray:
+    """Closest approach assuming straight-line relative motion within +/- max_dt seconds.
+
+    Over a few seconds both objects feel almost the same gravity, so relative
+    motion is very nearly linear; this is a cheap, vectorised pre-filter.
+    """
+    dv2 = np.einsum("ij,ij->i", dv, dv)
+    t = -np.einsum("ij,ij->i", dr, dv) / np.where(dv2 > 0, dv2, 1.0)
+    t = np.clip(t, -max_dt, max_dt)
+    return np.linalg.norm(dr + dv * t[:, None], axis=1)
+
+
+def _collect_hits(catalog: Catalog, start: datetime, offsets_s: np.ndarray, radius_km: float,
+                  keep_km: float, step_s: float, chunk_steps: int) -> np.ndarray:
+    """Return rows (step, i, j, est_miss_km) for pairs within radius whose linearly
+    extrapolated miss distance is below ``keep_km``."""
     hits = []
+    n_coarse = 0
     for c0 in range(0, len(offsets_s), chunk_steps):
-        r, ok = catalog.propagate(start, offsets_s[c0:c0 + chunk_steps])
+        r, v, ok = catalog.propagate(start, offsets_s[c0:c0 + chunk_steps])
         for k in range(r.shape[1]):
             valid = np.flatnonzero(ok[:, k])
             pts = r[valid, k]
             pairs = cKDTree(pts).query_pairs(radius_km, output_type="ndarray")
             if len(pairs) == 0:
                 continue
-            dist = np.linalg.norm(pts[pairs[:, 0]] - pts[pairs[:, 1]], axis=1)
+            n_coarse += len(pairs)
             gi = valid[pairs]
-            step = np.full(len(pairs), c0 + k)
-            hits.append(np.column_stack([step, gi[:, 0], gi[:, 1], dist]))
+            dr = pts[pairs[:, 0]] - pts[pairs[:, 1]]
+            dv = v[gi[:, 0], k] - v[gi[:, 1], k]
+            est = _linear_min_distance(dr, dv, step_s)
+            keep = est <= keep_km
+            if not keep.any():
+                continue
+            step = np.full(keep.sum(), c0 + k)
+            hits.append(np.column_stack([step, gi[keep, 0], gi[keep, 1], est[keep]]))
+    log.info("%d coarse pairs, %d kept after linear filter", n_coarse, sum(map(len, hits)))
     return np.concatenate(hits) if hits else np.empty((0, 4))
 
 
@@ -103,8 +126,8 @@ def screen(
     radius = threshold_km + MAX_REL_SPEED_KM_S * step_s / 2
     log.info("Screening %d objects over %d steps (radius %.1f km)", len(catalog), len(offsets), radius)
 
-    hits = _collect_hits(catalog, start, offsets, radius, chunk_steps)
-    log.info("%d coarse hits", len(hits))
+    hits = _collect_hits(catalog, start, offsets, radius, threshold_km + LINEAR_FILTER_MARGIN_KM,
+                         step_s, chunk_steps)
 
     jd, fr = _julian(start)
     last_step = len(offsets) - 1
