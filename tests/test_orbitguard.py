@@ -57,6 +57,7 @@ def test_finds_crossing_conjunction():
     c = found[0]
     assert 5.0 < c.miss_distance_km < 15.0
     assert c.relative_speed_km_s > 5.0
+    assert not c.co_orbital
     # 60 deg of mean anomaly at 15.2 rev/day is ~947 s.
     expected = EPOCH + timedelta(seconds=60 / 360 * 86400 / 15.2)
     assert abs((c.tca - expected).total_seconds()) < 30
@@ -81,10 +82,10 @@ def test_coarse_step_does_not_miss_fast_encounter():
     assert len(screen(cat, EPOCH, hours=0.5, step_s=60.0, threshold_km=20.0)) == 1
 
 
-def test_formation_flyers_are_flagged_persistent():
+def test_formation_flyers_are_flagged_co_orbital():
     cat = build_catalog([make_record(1, 53.0, 0.0), make_record(2, 53.0, 0.01)], at=EPOCH)
     found = screen(cat, EPOCH, hours=0.5, step_s=10.0, threshold_km=5.0)
-    assert found and all(c.persistent for c in found)
+    assert found and all(c.co_orbital for c in found)
 
 
 def test_distant_objects_produce_nothing():
