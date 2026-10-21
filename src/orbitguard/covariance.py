@@ -9,7 +9,8 @@ with the age of the element set:
 Along-track error dominates because small errors in the mean motion and drag
 accumulate along the orbit. The default parameters are order-of-magnitude
 assumptions for LEO; ``orbitguard calibrate`` replaces them with values measured
-from successive element sets.
+from successive element sets, fitted separately per population because
+manoeuvring constellations and passive debris behave very differently.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
+
+SIGMA_FLOOR_KM = 0.001
 
 
 def rtn_basis(r: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -36,8 +39,13 @@ class CovarianceModel:
     growth_km_per_day: tuple[float, float, float]   # R, T, N
     source: str = "assumed"
 
+    def for_object(self, name: str) -> "CovarianceModel":
+        return self
+
     def sigma_rtn(self, age_days: float) -> np.ndarray:
-        return np.asarray(self.sigma0_km) + np.asarray(self.growth_km_per_day) * abs(age_days)
+        sigma = np.asarray(self.sigma0_km) + np.asarray(self.growth_km_per_day) * abs(age_days)
+        # A fitted intercept can be 0; keep the covariance positive definite at age 0.
+        return np.maximum(sigma, SIGMA_FLOOR_KM)
 
     def covariance(self, r: np.ndarray, v: np.ndarray, age_days: float) -> np.ndarray:
         """3x3 position covariance (km^2) in the frame of (r, v), e.g. TEME."""
@@ -49,9 +57,53 @@ class CovarianceModel:
         path.write_text(json.dumps(asdict(self), indent=2))
 
     @classmethod
+    def from_dict(cls, d: dict) -> "CovarianceModel":
+        return cls(tuple(d["sigma0_km"]), tuple(d["growth_km_per_day"]), d.get("source", "unknown"))
+
+    @classmethod
     def load(cls, path: Path) -> "CovarianceModel":
-        d = json.loads(path.read_text())
-        return cls(tuple(d["sigma0_km"]), tuple(d["growth_km_per_day"]), d.get("source", str(path)))
+        return cls.from_dict(json.loads(path.read_text()))
+
+
+def population(name: str) -> str:
+    """Coarse object population from its catalog name."""
+    if name.startswith("STARLINK"):
+        return "starlink"
+    if name.startswith("ONEWEB"):
+        return "oneweb"
+    if "DEB" in name:
+        return "debris"
+    return "other"
+
+
+@dataclass(frozen=True)
+class PopulationCovariance:
+    """One covariance model per population, with a fallback for the rest."""
+    models: dict[str, CovarianceModel]
+    default: CovarianceModel
+    source: str
+
+    def for_object(self, name: str) -> CovarianceModel:
+        return self.models.get(population(name), self.default)
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "source": self.source,
+            "default": asdict(self.default),
+            "populations": {k: asdict(m) for k, m in self.models.items()},
+        }, indent=2))
+
+
+def load_covariance(path: Path) -> CovarianceModel | PopulationCovariance:
+    d = json.loads(path.read_text())
+    if "populations" in d:
+        return PopulationCovariance(
+            models={k: CovarianceModel.from_dict(m) for k, m in d["populations"].items()},
+            default=CovarianceModel.from_dict(d["default"]),
+            source=d.get("source", str(path)),
+        )
+    return CovarianceModel.from_dict(d)
 
 
 # Order-of-magnitude LEO values (along-track ~0.5 km at epoch, growing ~1 km/day).

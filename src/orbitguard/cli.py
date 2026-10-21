@@ -1,4 +1,4 @@
-"""Command-line entry point: ``python -m orbitguard screen``."""
+"""Command-line entry point: ``python -m orbitguard screen | calibrate``."""
 
 from __future__ import annotations
 
@@ -10,7 +10,14 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from orbitguard.covariance import DEFAULT_MODEL, CovarianceModel
+import numpy as np
+
+from orbitguard.calibration import (
+    Residuals, compute_residuals, fit_populations, load_snapshot_pairs,
+)
+from orbitguard.covariance import (
+    DEFAULT_MODEL, CovarianceModel, PopulationCovariance, load_covariance,
+)
 from orbitguard.ingest import DEFAULT_CACHE_DIR, fetch_groups
 from orbitguard.propagation import build_catalog
 from orbitguard.screening import screen
@@ -18,12 +25,12 @@ from orbitguard.screening import screen
 DEFAULT_COVARIANCE_PATH = Path("data/models/covariance.json")
 
 
-def _load_covariance(path: Path | None) -> CovarianceModel:
+def _load_covariance(path: Path | None) -> CovarianceModel | PopulationCovariance:
     """Explicit path, else a calibrated model if one exists, else the assumed default."""
     if path is not None:
-        return CovarianceModel.load(path)
+        return load_covariance(path)
     if DEFAULT_COVARIANCE_PATH.exists():
-        return CovarianceModel.load(DEFAULT_COVARIANCE_PATH)
+        return load_covariance(DEFAULT_COVARIANCE_PATH)
     return DEFAULT_MODEL
 
 
@@ -70,6 +77,48 @@ def _cmd_screen(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    pairs = load_snapshot_pairs(args.cache_dir)
+    if not pairs:
+        print(f"Need at least two cached snapshots of a group in {args.cache_dir}; "
+              "run `orbitguard screen` again after CelesTrak publishes new data.")
+        return 1
+    parts = [compute_residuals(old, new) for old, new in pairs]
+    res = Residuals(
+        norad_ids=np.concatenate([p.norad_ids for p in parts]),
+        names=[n for p in parts for n in p.names],
+        age_days=np.concatenate([p.age_days for p in parts]),
+        rtn_km=np.concatenate([p.rtn_km for p in parts]),
+    )
+    today = datetime.now(timezone.utc)
+    model, summaries = fit_populations(
+        res, source=f"calibrated {today:%Y-%m-%d} from {len(res.age_days)} element-set pairs")
+
+    pooled = summaries["pooled"]
+    print(f"\n{pooled['residuals']} residuals from {len(pairs)} snapshot pairs, "
+          f"ages {pooled['age_days_range'][0]:.2f}-{pooled['age_days_range'][1]:.2f} days\n")
+    print(f"{'population':<10} {'n':>6} {'outliers':>8}   {'sigma0 R,T,N (km)':<24} "
+          f"{'growth R,T,N (km/day)':<24} {'sigma T @ 2 d':>12}")
+    rows = [(pop, model.models[pop]) for pop in model.models] + [("pooled", model.default)]
+    for pop, m in rows:
+        s = summaries[pop]
+        print(f"{pop:<10} {s['residuals']:6d} {s['outlier_fraction']:8.1%}   "
+              f"{_fmt3(m.sigma0_km):<24} {_fmt3(m.growth_km_per_day):<24} "
+              f"{m.sigma_rtn(2.0)[1]:9.2f} km")
+    print(f"{'assumed':<10} {'':>6} {'':>8}   {_fmt3(DEFAULT_MODEL.sigma0_km):<24} "
+          f"{_fmt3(DEFAULT_MODEL.growth_km_per_day):<24} {DEFAULT_MODEL.sigma_rtn(2.0)[1]:9.2f} km")
+
+    out = args.out or DEFAULT_COVARIANCE_PATH
+    model.save(out)
+    out.with_suffix(".summary.json").write_text(json.dumps(summaries, indent=2))
+    print(f"\nWrote {out} (used automatically by `orbitguard screen`)")
+    return 0
+
+
+def _fmt3(values) -> str:
+    return ", ".join(f"{v:.3f}" for v in values)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orbitguard")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -95,6 +144,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     p.add_argument("--out", type=Path, default=None)
     p.set_defaults(func=_cmd_screen)
+
+    c = sub.add_parser("calibrate",
+                       help="Fit the covariance model from cached snapshots of the same objects")
+    c.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    c.add_argument("--out", type=Path, default=None,
+                   help=f"Model output path (default: {DEFAULT_COVARIANCE_PATH})")
+    c.set_defaults(func=_cmd_calibrate)
 
     args = parser.parse_args(argv)
     if args.command == "screen" and not args.group:
