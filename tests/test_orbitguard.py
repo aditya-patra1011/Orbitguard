@@ -58,6 +58,7 @@ def test_finds_crossing_conjunction():
     assert 5.0 < c.miss_distance_km < 15.0
     assert c.relative_speed_km_s > 5.0
     assert not c.co_orbital
+    assert c.pc is not None and 0.0 <= c.pc <= 1.0
     # 60 deg of mean anomaly at 15.2 rev/day is ~947 s.
     expected = EPOCH + timedelta(seconds=60 / 360 * 86400 / 15.2)
     assert abs((c.tca - expected).total_seconds()) < 30
@@ -86,6 +87,19 @@ def test_formation_flyers_are_flagged_co_orbital():
     cat = build_catalog([make_record(1, 53.0, 0.0), make_record(2, 53.0, 0.01)], at=EPOCH)
     found = screen(cat, EPOCH, hours=0.5, step_s=10.0, threshold_km=5.0)
     assert found and all(c.co_orbital for c in found)
+    assert all(c.pc is None for c in found)
+
+
+def test_pc_rises_when_uncertainty_matches_miss_distance():
+    # The crossing misses by ~9 km. With 10 m uncertainty a hit is impossible;
+    # with ~10 km along-track uncertainty a hit becomes plausible.
+    from orbitguard.covariance import CovarianceModel
+    cat = build_catalog(_crossing_pair(), at=EPOCH)
+    tight = CovarianceModel((0.01, 0.01, 0.01), (0.0, 0.0, 0.0))
+    loose = CovarianceModel((5.0, 10.0, 5.0), (0.0, 0.0, 0.0))
+    pc_tight = screen(cat, EPOCH, hours=0.5, threshold_km=20.0, cov_model=tight)[0].pc
+    pc_loose = screen(cat, EPOCH, hours=0.5, threshold_km=20.0, cov_model=loose)[0].pc
+    assert pc_tight < 1e-12 < pc_loose
 
 
 def test_distant_objects_produce_nothing():
