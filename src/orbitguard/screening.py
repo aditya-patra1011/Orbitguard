@@ -21,7 +21,7 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 from scipy.spatial import cKDTree
 
-from orbitguard.covariance import DEFAULT_MODEL, CovarianceModel
+from orbitguard.covariance import DEFAULT_MODEL, CovarianceModel, PopulationCovariance
 from orbitguard.propagation import Catalog, _julian, propagate_one
 from orbitguard.risk import collision_probability
 
@@ -131,7 +131,7 @@ def screen(
     step_s: float = 10.0,
     threshold_km: float = 5.0,
     chunk_steps: int = 60,
-    cov_model: CovarianceModel = DEFAULT_MODEL,
+    cov_model: CovarianceModel | PopulationCovariance = DEFAULT_MODEL,
     hbr_km: float = DEFAULT_HBR_KM,
 ) -> list[Conjunction]:
     """Find all close approaches below ``threshold_km`` in [start, start + hours],
@@ -165,7 +165,8 @@ def screen(
         if not co_orbital:
             age1 = (tca - catalog.epochs[i]).total_seconds() / 86400.0
             age2 = (tca - catalog.epochs[j]).total_seconds() / 86400.0
-            cov = cov_model.covariance(r1, v1, age1) + cov_model.covariance(r2, v2, age2)
+            cov = (cov_model.for_object(catalog.names[i]).covariance(r1, v1, age1)
+                   + cov_model.for_object(catalog.names[j]).covariance(r2, v2, age2))
             pc = collision_probability(r1 - r2, v1 - v2, cov, hbr_km)
         results.append(Conjunction(
             norad_id_1=int(catalog.norad_ids[i]), name_1=catalog.names[i],
