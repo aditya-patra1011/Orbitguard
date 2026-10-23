@@ -58,8 +58,30 @@ def build_training_task(cdms: pd.DataFrame) -> Task:
     return Task(inputs, targets.loc[inputs.event_id.unique()])
 
 
+def build_augmentation_task(cdms: pd.DataFrame, exclude: pd.Index, gap_days: float = 1.0) -> Task:
+    """Extra training examples from events the strict rules exclude.
+
+    For each such event the target is its own last CDM's risk, and the inputs are
+    the CDMs issued at least ``gap_days`` before that last CDM: the same "predict
+    the later risk from earlier messages" problem, at a different distance from TCA.
+    Events in ``exclude`` (the strict task) are never used, so there is no overlap.
+    """
+    cdms = sort_cdms(cdms[~cdms.event_id.isin(exclude)])
+    t_last = cdms.groupby("event_id")["time_to_tca"].transform("last")
+    targets = cdms.groupby("event_id")["risk"].last().rename("final_risk")
+    inputs = cdms[cdms.time_to_tca >= t_last + gap_days].reset_index(drop=True)
+    return Task(inputs, targets.loc[inputs.event_id.unique()])
+
+
 def load_training_task(data_dir: Path = DEFAULT_DATA_DIR) -> Task:
     return build_training_task(pd.read_csv(data_dir / "train_data.csv"))
+
+
+def load_training_tasks(data_dir: Path = DEFAULT_DATA_DIR) -> tuple[Task, Task]:
+    """Strict training task plus the augmentation task built from the remaining events."""
+    raw = pd.read_csv(data_dir / "train_data.csv")
+    strict = build_training_task(raw)
+    return strict, build_augmentation_task(raw, exclude=strict.event_ids)
 
 
 def load_test_task(data_dir: Path = DEFAULT_DATA_DIR) -> Task:
