@@ -10,6 +10,8 @@ import argparse
 import json
 from pathlib import Path
 
+from orbitguard.cdm import DEFAULT_DATA_DIR
+
 DEFAULT_MODEL_PATH = Path("data/models/cdm_risk_model.joblib")
 DEFAULT_EVAL_PATH = Path("data/models/cdm_test_evaluation.json")
 
@@ -72,8 +74,6 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
 
 
 def add_risk_parser(sub) -> None:
-    from orbitguard.cdm.data import DEFAULT_DATA_DIR
-
     risk = sub.add_parser("risk", help="Final-risk model on ESA conjunction data messages")
     risk_sub = risk.add_subparsers(dest="risk_command", required=True)
 

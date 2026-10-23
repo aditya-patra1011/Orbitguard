@@ -21,9 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
-DEFAULT_DATA_DIR = Path(
-    "data/kelvins/extracted/Collision Avoidance Challenge - Dataset/kelvins_competition_data"
-)
+from orbitguard.cdm import DEFAULT_DATA_DIR
+
 INPUT_CUTOFF_DAYS = 2.0
 TARGET_WINDOW_DAYS = 1.0
 HIGH_RISK = -6.0  # log10 Pc; the competition's notification threshold
