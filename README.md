@@ -4,7 +4,9 @@ Orbital conjunction screening and ML-based collision risk assessment for objects
 
 OrbitGuard pulls the latest public orbital element sets, propagates every object with SGP4,
 finds close approaches between all pairs, and scores each one with a probability of collision
-(Pc) using position uncertainty **measured** from the data itself.
+(Pc) using position uncertainty **measured** from the data itself. A machine-learning model,
+trained on ESA's real conjunction data messages, forecasts an event's final risk two days
+before closest approach.
 
 ## What works today
 
@@ -89,8 +91,62 @@ Two findings drove the design:
    threshold (Pc ≥ 1e-4) fall from 97 to 7, and the list becomes almost entirely
    debris-on-debris, where orbits are known well enough for a close pass to stay a close pass.
 
+## Phase 3: forecasting final risk from conjunction data messages
+
+**Data.** ESA's [Collision Avoidance Challenge dataset](https://zenodo.org/records/4463683)
+(CC-BY-4.0): 162,634 Conjunction Data Messages (CDMs) that ESA received for its own satellites
+in 2015-2019. Each close-approach *event* is a time series of CDMs, refined as closest approach
+nears.
+
+**Task** (exactly as in the competition, [Uriot et al. 2020](https://arxiv.org/abs/2008.03069)):
+using only CDMs issued at least 2 days before closest approach, predict the risk (log10 Pc) in
+the event's final CDM. The score is `L = MSE on high-risk events / F2`, where F2 weights missed
+dangerous events (final risk >= 1e-6) four times as heavily as false alarms. Our implementation
+reproduces the published baseline exactly (L = 0.694, MSE 0.513, F2 0.739).
+
+```
+$ python -m orbitguard risk cv          # cross-validate on training data, choose the threshold
+$ python -m orbitguard risk train       # train the final model
+$ python -m orbitguard risk evaluate    # score once on the held-out test set
+```
+
+**What we learned building it**
+
+1. **Learning from scratch failed badly.** Only 66 of 8,293 training events end high-risk. Every
+   model that predicted the final risk directly learned that risky-looking events usually end
+   safe, lowered its predictions and lost the recall F2 rewards (cross-validated L 3.4 to 8.7
+   versus 0.80 for simply repeating the latest risk).
+2. **So the model keeps the latest risk as its backbone** and learns only two corrections: a value
+   correction for events it already flags, trained only on events that truly ended high; and a
+   classifier for "late risers", low-risk events whose risk still climbs.
+3. **Data augmentation** from 3,002 events the strict competition rules discard (predicting each
+   event's own last message from earlier ones) raised the late-riser examples from 19 to 69.
+4. **The design and threshold were fixed by cross-validation and committed before the test set
+   was touched** (pre-registered), with the expectation that the gain was within noise.
+
+**Result on the held-out test set** (2,167 events, 150 high-risk), evaluated once:
+
+| | L | MSE_HR | F2 | Dangerous events missed | False alarms |
+|---|---:|---:|---:|---:|---:|
+| OrbitGuard model | 0.699 | 0.524 | **0.749** | **31** | 75 |
+| Latest-risk baseline | **0.694** | **0.513** | 0.739 | 35 | 63 |
+| Constant -5 | 2.504 | 0.679 | 0.271 | 0 | 2,017 |
+
+A statistical tie with a baseline that only 12 of 97 competition teams beat. The late-riser
+classifier worked (4 more dangerous events caught for 12 more false alarms); the value correction
+slightly hurt, and its top feature, the sunspot number, acts as a time proxy that is fragile
+under the shift between the training (0.8% high-risk) and test (6.9%) sets. The winning
+team's published rules made their own training score worse while improving the test score, and
+30% of teams reported probing the test set; we did not, so these numbers are what a new, unseen
+period would look like.
+
 ## Honest limitations
 
+- **The ML model does not yet beat the naive forecast.** It ties it, catches more dangerous
+  events and loses a little on value accuracy; removing time-proxy features is the next step.
+- **CDM data is not available for OrbitGuard's own screening.** CDMs include operator orbit
+  determination details that public GP data lacks, so the risk model is a separate component
+  for now; Phase 4 serves both side by side.
 - **Low Pc can mean "unknown", not "safe".** With 38 km of along-track uncertainty, a Starlink
   pair's Pc is diluted to near zero whatever the true geometry (the *dilution region*). Operators
   solve this with their own precise ephemerides; public data cannot. Phase 3 addresses risk
@@ -110,7 +166,7 @@ Two findings drove the design:
 |---|---|---|
 | 1 ✅ | Screening engine | Ingestion + cache, SGP4, KD-tree screening, TCA refinement, tests |
 | 2 ✅ | Collision probability | 2-D encounter-plane Pc; RTN covariance model calibrated per population from successive element sets |
-| 3 | ML risk model | Train on ESA Kelvins Collision Avoidance Challenge CDM data: predict the *final* risk of an event from early CDMs; baseline vs. gradient boosting vs. sequence model; MLflow tracking |
+| 3 ✅ | ML risk model | ESA CDM data; exact reproduction of the competition metric and baselines; latest-risk backbone with learned value and late-riser corrections; pre-registered, one-time test evaluation |
 | 4 | Serving | FastAPI (`/conjunctions`, `/risk/{event}`), Postgres/TimescaleDB, Docker |
 | 5 | Pipeline + MLOps | Scheduled screening and recalibration, data validation, drift monitoring, retraining, CI/CD |
 | 6 | Dashboard | 3-D globe (CesiumJS) with live high-risk events, deployed publicly |
@@ -120,7 +176,11 @@ Two findings drove the design:
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"   # Linux/macOS: .venv/bin/python
+                                                  # [dev] includes the [ml] extra
 .venv/Scripts/python -m pytest
 ```
 
 Data: [CelesTrak](https://celestrak.org) GP data. Please respect its rate limits; the 2-hour cache exists for that reason.
+For Phase 3, download `Collision Avoidance Challenge - Dataset.zip` from
+[Zenodo record 4463683](https://zenodo.org/records/4463683) and extract it into `data/kelvins/extracted/`.
+Tests that need it are skipped when it is absent.
