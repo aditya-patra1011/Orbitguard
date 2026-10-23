@@ -19,3 +19,13 @@ def test_top_features_are_normalised_gains(model):  # noqa: F811
 def test_leaderboard_is_the_published_top_ten():
     assert len(LEADERBOARD) == 10
     assert min(LEADERBOARD.values()) == 0.556
+
+
+def test_cli_does_not_import_ml_libraries():
+    # `orbitguard screen` must work without the optional [ml] extra.
+    import subprocess
+    import sys
+    code = ("import sys, orbitguard.cli; "
+            "print(any(m in sys.modules for m in ('pandas', 'lightgbm', 'sklearn')))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"

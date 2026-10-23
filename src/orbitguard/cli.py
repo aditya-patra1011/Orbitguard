@@ -1,4 +1,4 @@
-"""Command-line entry point: ``python -m orbitguard screen | calibrate``."""
+"""Command-line entry point: ``python -m orbitguard screen | calibrate | risk``."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
+from orbitguard.cdm.cli import add_risk_parser
 from orbitguard.calibration import (
     Residuals, compute_residuals, fit_populations, load_snapshot_pairs,
 )
@@ -151,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--out", type=Path, default=None,
                    help=f"Model output path (default: {DEFAULT_COVARIANCE_PATH})")
     c.set_defaults(func=_cmd_calibrate)
+
+    add_risk_parser(sub)
 
     args = parser.parse_args(argv)
     if args.command == "screen" and not args.group:
