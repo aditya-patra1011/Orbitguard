@@ -22,10 +22,10 @@ def test_leaderboard_is_the_published_top_ten():
 
 
 def test_cli_does_not_import_ml_libraries():
-    # `orbitguard screen` must work without the optional [ml] extra.
+    # `orbitguard screen` must work without the optional [ml] and [api] extras.
     import subprocess
     import sys
     code = ("import sys, orbitguard.cli; "
-            "print(any(m in sys.modules for m in ('pandas', 'lightgbm', 'sklearn')))")
+            "print(any(m in sys.modules for m in ('pandas', 'lightgbm', 'sklearn', 'sqlalchemy', 'fastapi')))")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"

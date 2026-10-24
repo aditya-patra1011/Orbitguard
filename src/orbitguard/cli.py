@@ -1,4 +1,4 @@
-"""Command-line entry point: ``python -m orbitguard screen | calibrate | risk``."""
+"""Command-line entry point: ``python -m orbitguard screen | calibrate | risk | db | serve``."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from orbitguard.propagation import build_catalog
 from orbitguard.screening import screen
 
 DEFAULT_COVARIANCE_PATH = Path("data/models/covariance.json")
+DB_URL_HELP = "SQLAlchemy database URL (default: $ORBITGUARD_DB_URL or sqlite:///data/orbitguard.db)"
 
 
 def _load_covariance(path: Path | None) -> CovarianceModel | PopulationCovariance:
@@ -62,9 +63,7 @@ def _cmd_screen(args: argparse.Namespace) -> int:
               f"{c.pc:9.2e}  "
               f"{c.name_1} ({c.norad_id_1}) x {c.name_2} ({c.norad_id_2})")
 
-    out = args.out or Path("data/processed") / f"conjunctions_{start:%Y%m%dT%H%M%SZ}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({
+    result = {
         "generated_at": start.isoformat(),
         "groups": args.group,
         "objects_screened": len(catalog),
@@ -73,8 +72,50 @@ def _cmd_screen(args: argparse.Namespace) -> int:
         "hard_body_radius_m": args.hbr_m,
         "covariance_model": asdict(cov_model),
         "conjunctions": [c.to_dict() for c in conjunctions],
-    }, indent=2))
+    }
+    out = args.out or Path("data/processed") / f"conjunctions_{start:%Y%m%dT%H%M%SZ}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2))
     print(f"\nWrote {out}")
+
+    if args.store:
+        from sqlalchemy.orm import Session
+
+        from orbitguard.store import make_engine, save_result
+
+        with Session(make_engine(args.db_url)) as session:
+            run = save_result(session, result)
+            session.commit()
+            print(f"Stored as run {run.id} in {session.get_bind().url.render_as_string(hide_password=True)}")
+    return 0
+
+
+def _cmd_db_import(args: argparse.Namespace) -> int:
+    from sqlalchemy.orm import Session
+
+    from orbitguard.store import import_files, make_engine
+
+    paths = args.paths or sorted(Path("data/processed").glob("conjunctions_*.json"))
+    with Session(make_engine(args.db_url)) as session:
+        runs = import_files(session, paths)
+        session.commit()
+        print(f"Imported {len(runs)} new run(s) "
+              f"({sum(r.n_conjunctions for r in runs)} conjunctions) from {len(paths)} file(s)")
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    import os
+
+    import uvicorn
+
+    # The app reads its configuration from the environment when it starts.
+    if args.db_url:
+        os.environ["ORBITGUARD_DB_URL"] = args.db_url
+    if args.risk_model:
+        os.environ["ORBITGUARD_RISK_MODEL"] = str(args.risk_model)
+    print(f"OrbitGuard API on http://{args.host}:{args.port}  (docs: /docs)")
+    uvicorn.run("orbitguard.api:app", host=args.host, port=args.port, reload=args.reload)
     return 0
 
 
@@ -144,7 +185,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--refresh", action="store_true", help="Ignore the 2-hour data cache")
     p.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     p.add_argument("--out", type=Path, default=None)
+    p.add_argument("--store", action="store_true",
+                   help="Also save the run to the results database (needs the [api] extra)")
+    p.add_argument("--db-url", default=None, help=DB_URL_HELP)
     p.set_defaults(func=_cmd_screen)
+
+    db = sub.add_parser("db", help="Results database")
+    db_sub = db.add_subparsers(dest="db_command", required=True)
+    imp = db_sub.add_parser("import", help="Import screening result JSON files")
+    imp.add_argument("paths", nargs="*", type=Path,
+                     help="Result files (default: data/processed/conjunctions_*.json)")
+    imp.add_argument("--db-url", default=None, help=DB_URL_HELP)
+    imp.set_defaults(func=_cmd_db_import)
+
+    s = sub.add_parser("serve", help="Run the HTTP API (needs the [api] extra)")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8000)
+    s.add_argument("--db-url", default=None, help=DB_URL_HELP)
+    s.add_argument("--risk-model", type=Path, default=None,
+                   help="Trained CDM risk model (default: data/models/cdm_risk_model.joblib)")
+    s.add_argument("--reload", action="store_true", help="Restart on code changes (development)")
+    s.set_defaults(func=_cmd_serve)
 
     c = sub.add_parser("calibrate",
                        help="Fit the covariance model from cached snapshots of the same objects")
