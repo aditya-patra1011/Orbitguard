@@ -19,6 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
+from sqlalchemy.pool import StaticPool
 
 DEFAULT_DB_URL = "sqlite:///data/orbitguard.db"
 
@@ -68,9 +69,14 @@ def database_url() -> str:
 
 def make_engine(url: str | None = None) -> Engine:
     url = url or database_url()
-    if url.startswith("sqlite:///") and not url.startswith("sqlite:///:memory:"):
+    kwargs = {}
+    if url in ("sqlite://", "sqlite:///:memory:"):
+        # One shared in-memory database across threads (used by tests and the API test client).
+        kwargs = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool}
+    elif url.startswith("sqlite:///"):
         Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(url)
+        kwargs = {"connect_args": {"check_same_thread": False}}
+    engine = create_engine(url, **kwargs)
     Base.metadata.create_all(engine)
     return engine
 
