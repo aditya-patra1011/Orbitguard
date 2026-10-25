@@ -6,7 +6,11 @@ OrbitGuard pulls the latest public orbital element sets, propagates every object
 finds close approaches between all pairs, and scores each one with a probability of collision
 (Pc) using position uncertainty **measured** from the data itself. A machine-learning model,
 trained on ESA's real conjunction data messages, forecasts an event's final risk two days
-before closest approach.
+before closest approach. Both are served by an HTTP API, packaged with Docker and PostgreSQL.
+
+```
+docker compose up -d --build        # PostgreSQL + API on http://localhost:8000 (docs at /docs)
+```
 
 ## What works today
 
@@ -140,13 +144,47 @@ team's published rules made their own training score worse while improving the t
 30% of teams reported probing the test set; we did not, so these numbers are what a new, unseen
 period would look like.
 
+## Phase 4: serving
+
+```
+python -m orbitguard screen --group starlink --group fengyun-1c-debris --store   # screen + save
+python -m orbitguard db import                                                   # load past results
+python -m orbitguard serve                                                       # API on :8000
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Database and model status, time of the latest run |
+| `GET /runs`, `/runs/latest`, `/runs/{id}` | Screening runs and their settings |
+| `GET /conjunctions` | Latest run by default; filter by `min_pc`, `max_miss_km`, `norad_id`, TCA window, co-orbital; order by `pc`, `miss` or `tca`; paginated |
+| `GET /conjunctions/{id}`, `/objects/{norad_id}/conjunctions` | One event; every event for one object |
+| `POST /risk/forecast` | Submit CDM time series, get the Phase 3 forecast of each event's final risk |
+
+**Storage.** SQLAlchemy keeps one code path for SQLite (a single local file, the default) and
+PostgreSQL (in Docker), selected by `ORBITGUARD_DB_URL`. Runs and conjunctions are indexed on run,
+object, TCA and Pc; a filtered query over a 46,000-conjunction run returns in about 60 ms.
+
+**Docker.** A two-stage, non-root image with a health check; `compose.yaml` runs PostgreSQL 16, the
+API and a `cli` service for one-off jobs (`docker compose run --rm cli db import`,
+`... cli screen --group oneweb --store`). Data persists in a named volume across restarts.
+
+**Verified, not assumed.**
+- An API test sends 40 real ESA test events through `/risk/forecast` and checks the forecasts
+  equal the offline evaluation pipeline exactly.
+- The same high-risk query gives the same 7 events on SQLite and on PostgreSQL.
+- Running the image exposed a real deployment bug: the model would not load because pandas 3 had
+  stored strings with pyarrow on the training machine and the image lacked it. The fix (matching
+  dependencies, and logging the real error instead of a guess) is in the history.
+
 ## Honest limitations
 
+- **The API has no authentication** and the Compose file uses a default database password: it is
+  built for local use. Public deployment (Phase 6) needs auth, TLS and secrets management.
 - **The ML model does not yet beat the naive forecast.** It ties it, catches more dangerous
   events and loses a little on value accuracy; removing time-proxy features is the next step.
 - **CDM data is not available for OrbitGuard's own screening.** CDMs include operator orbit
   determination details that public GP data lacks, so the risk model is a separate component
-  for now; Phase 4 serves both side by side.
+  for now; the API serves both side by side.
 - **Low Pc can mean "unknown", not "safe".** With 38 km of along-track uncertainty, a Starlink
   pair's Pc is diluted to near zero whatever the true geometry (the *dilution region*). Operators
   solve this with their own precise ephemerides; public data cannot. Phase 3 addresses risk
@@ -167,7 +205,7 @@ period would look like.
 | 1 ✅ | Screening engine | Ingestion + cache, SGP4, KD-tree screening, TCA refinement, tests |
 | 2 ✅ | Collision probability | 2-D encounter-plane Pc; RTN covariance model calibrated per population from successive element sets |
 | 3 ✅ | ML risk model | ESA CDM data; exact reproduction of the competition metric and baselines; latest-risk backbone with learned value and late-riser corrections; pre-registered, one-time test evaluation |
-| 4 | Serving | FastAPI (`/conjunctions`, `/risk/{event}`), Postgres/TimescaleDB, Docker |
+| 4 ✅ | Serving | Results database (SQLite / PostgreSQL), FastAPI service for conjunctions and risk forecasts, Docker image and Compose stack |
 | 5 | Pipeline + MLOps | Scheduled screening and recalibration, data validation, drift monitoring, retraining, CI/CD |
 | 6 | Dashboard | 3-D globe (CesiumJS) with live high-risk events, deployed publicly |
 
@@ -176,7 +214,7 @@ period would look like.
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"   # Linux/macOS: .venv/bin/python
-                                                  # [dev] includes the [ml] extra
+                                                  # [dev] includes the [ml] and [api] extras
 .venv/Scripts/python -m pytest
 ```
 
