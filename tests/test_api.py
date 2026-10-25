@@ -118,3 +118,13 @@ def test_risk_forecast_matches_offline_model(tmp_path):
     early_only = {"events": [{"event_id": 1, "cdms": [{"time_to_tca": 1.5, "risk": -5.0}]}]}
     with TestClient(app) as c:
         assert c.post("/risk/forecast", json=early_only).status_code == 422
+
+
+def test_unloadable_model_is_reported_and_api_still_serves(tmp_path, caplog):
+    bad = tmp_path / "broken.joblib"
+    bad.write_bytes(b"not a pickle")
+    app = create_app(make_engine("sqlite://"), risk_model_path=bad)
+    with TestClient(app) as c:
+        assert c.get("/health").json()["risk_model_loaded"] is False
+        assert c.get("/conjunctions").status_code == 200
+    assert "Could not load risk model" in caplog.text

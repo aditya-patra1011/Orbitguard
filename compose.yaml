@@ -1,0 +1,54 @@
+# OrbitGuard with PostgreSQL.
+#
+#   docker compose up -d --build                     # database + API on http://localhost:8000
+#   docker compose run --rm cli db import            # load existing results from ./data/processed
+#   docker compose run --rm cli screen --group starlink --group fengyun-1c-debris --store
+#   docker compose down                              # stop (data persists in the pgdata volume)
+#
+# Local development only: the database password defaults to "orbitguard" and the
+# database port is not published. Set POSTGRES_PASSWORD in a .env file to change it.
+
+x-orbitguard: &orbitguard
+  build: .
+  image: orbitguard:latest
+  environment:
+    ORBITGUARD_DB_URL: postgresql+psycopg://orbitguard:${POSTGRES_PASSWORD:-orbitguard}@db:5432/orbitguard
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orbitguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orbitguard}
+      POSTGRES_DB: orbitguard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbitguard -d orbitguard"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    <<: *orbitguard
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/models:/app/data/models:ro      # trained risk model (optional)
+    restart: unless-stopped
+
+  # One-off CLI jobs: `docker compose run --rm cli <command>`.
+  cli:
+    <<: *orbitguard
+    entrypoint: ["orbitguard"]
+    command: ["--help"]
+    volumes:
+      - ./data:/app/data                       # CelesTrak cache, results, models
+    profiles: ["jobs"]
+
+volumes:
+  pgdata:
