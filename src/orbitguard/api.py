@@ -257,9 +257,14 @@ def _load_risk_model(path: Path):
         return None
     try:
         from orbitguard.cdm.model import RiskModel
-        return RiskModel.load(path)
     except ImportError:
-        log.warning("Risk model found but the [ml] extra is not installed")
+        log.warning("Risk model found at %s but the [ml] extra is not installed", path)
+        return None
+    try:
+        return RiskModel.load(path)
+    except Exception:  # noqa: BLE001 - a bad model file must not stop the screening API
+        # Usually an environment mismatch: the pickle references a library missing here.
+        log.exception("Could not load risk model %s; /risk/forecast will return 503", path)
         return None
 
 
