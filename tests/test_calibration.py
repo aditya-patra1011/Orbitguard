@@ -1,7 +1,11 @@
+import json
+from datetime import datetime, timedelta, timezone
+
 import numpy as np
 import pytest
 
-from orbitguard.calibration import Residuals, compute_residuals, fit_model, fit_populations
+from orbitguard.calibration import (Residuals, calibrate_from_cache, compute_residuals,
+                                    fit_model, fit_populations, load_snapshot_pairs)
 from orbitguard.covariance import population
 from test_orbitguard import make_record
 
@@ -20,6 +24,42 @@ def test_along_track_shift_appears_on_t_axis():
 def test_objects_without_a_newer_element_set_are_skipped():
     rec = make_record(1, 53.0, 10.0)
     assert len(compute_residuals([rec], [rec]).age_days) == 0  # age 0 < min_age
+
+
+def test_element_sets_older_than_three_days_are_not_used():
+    new = make_record(1, 53.0, 10.0)
+    epoch = datetime.strptime(new["EPOCH"], "%Y-%m-%dT%H:%M:%S.%f")
+    recent = {**new, "EPOCH": (epoch - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.%f")}
+    stale = {**new, "EPOCH": (epoch - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S.%f")}
+    assert len(compute_residuals([recent], [new]).age_days) == 1
+    assert len(compute_residuals([stale], [new]).age_days) == 0
+
+
+def _write_snapshot(cache_dir, group, fetched, set_no):
+    rec = {**make_record(1, 53.0, 10.0), "ELEMENT_SET_NO": set_no}
+    (cache_dir / f"gp_{group}_{fetched:%Y%m%dT%H%M%SZ}.json").write_text(json.dumps([rec]))
+
+
+def test_snapshot_pairs_are_recent_and_close_together(tmp_path):
+    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    for day in (0, 1, 2, 6):  # the day-6 snapshot is more than 3 days after all others
+        _write_snapshot(tmp_path, "starlink", start + timedelta(days=day), set_no=day)
+    pairs = load_snapshot_pairs(tmp_path)
+    assert sorted((a[0]["ELEMENT_SET_NO"], b[0]["ELEMENT_SET_NO"]) for a, b in pairs) == [
+        (0, 1), (0, 2), (1, 2)]
+
+    # Only the latest snapshots of a group are paired.
+    assert [(a[0]["ELEMENT_SET_NO"], b[0]["ELEMENT_SET_NO"])
+            for a, b in load_snapshot_pairs(tmp_path, max_snapshots=2)] == []
+    assert [(a[0]["ELEMENT_SET_NO"], b[0]["ELEMENT_SET_NO"])
+            for a, b in load_snapshot_pairs(tmp_path, max_snapshots=3)] == [(1, 2)]
+
+
+def test_calibration_needs_enough_recent_residuals(tmp_path):
+    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    _write_snapshot(tmp_path, "starlink", start, set_no=1)
+    _write_snapshot(tmp_path, "starlink", start + timedelta(days=1), set_no=2)
+    assert calibrate_from_cache(tmp_path) is None  # one pair, far fewer than 50 residuals
 
 
 def test_fit_recovers_known_growth_despite_manoeuvre_outliers():

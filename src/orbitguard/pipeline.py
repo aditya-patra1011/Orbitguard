@@ -140,7 +140,8 @@ def run_pipeline(cfg: PipelineConfig, engine: Engine, now: datetime | None = Non
 
         metrics: dict = {"validation_warnings": sum(len(r.warnings) for r in validation)}
 
-        # 3. Recalibrate uncertainty from all cached snapshot pairs.
+        # 3. Recalibrate uncertainty from recent cached snapshot pairs (if too few, the
+        #    previous model is kept).
         if cfg.calibrate:
             fitted = calibrate_from_cache(cfg.cache_dir, today=started)
             if fitted is not None:

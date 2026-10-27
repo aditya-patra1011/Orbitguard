@@ -10,6 +10,12 @@ robust spread (MAD) per bin is fitted with sigma = sigma0 + growth * age.
 Manoeuvring satellites produce large outliers; the MAD keeps them from inflating
 the fit, and they are counted separately.
 
+Only pairs up to ``MAX_PAIR_AGE_DAYS`` apart are used. Screening propagates element
+sets that are about a day old over a 24-hour window, so that is the range the model
+has to be right in. Along-track error grows faster than linearly (drag, manoeuvres):
+Starlink measured ~30 km at 2 days but ~400 km at 8 days, and a straight line fitted
+through both overstated the 2-day error threefold.
+
 The newer element set has its own error, so the measured spread is slightly
 conservative (it includes both sets' errors).
 """
@@ -34,6 +40,9 @@ log = logging.getLogger(__name__)
 
 MAD_TO_SIGMA = 1.4826
 OUTLIER_SIGMAS = 5.0
+MAX_PAIR_AGE_DAYS = 3.0
+MAX_SNAPSHOTS = 8       # latest snapshots per group; older ones describe stale behaviour
+MIN_RESIDUALS = 50
 
 
 @dataclass
@@ -58,7 +67,8 @@ def _satrec(rec: dict) -> Satrec | None:
 
 
 def compute_residuals(old: list[dict], new: list[dict],
-                      min_age_days: float = 0.25, max_age_days: float = 14.0) -> Residuals:
+                      min_age_days: float = 0.25,
+                      max_age_days: float = MAX_PAIR_AGE_DAYS) -> Residuals:
     """RTN prediction errors of ``old`` element sets checked against ``new`` ones."""
     old_by_id = {int(r["NORAD_CAT_ID"]): r for r in old}
     ids, names, ages, rows = [], [], [], []
@@ -157,32 +167,54 @@ def fit_populations(res: Residuals, source: str, min_samples: int = 300
     return PopulationCovariance(models, default, source), summaries
 
 
-def load_snapshot_pairs(cache_dir: Path) -> list[tuple[list[dict], list[dict]]]:
-    """(older, newer) record lists for every pair of cached snapshots of each group."""
+def _fetched_at(path: Path) -> datetime:
+    stamp = path.stem.rsplit("_", 1)[1]
+    return datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+
+
+def load_snapshot_pairs(cache_dir: Path, max_snapshots: int = MAX_SNAPSHOTS,
+                        max_gap_days: float = MAX_PAIR_AGE_DAYS
+                        ) -> list[tuple[list[dict], list[dict]]]:
+    """(older, newer) record lists for pairs of each group's latest cached snapshots.
+
+    Pairs fetched more than ``max_gap_days`` apart are skipped before loading: almost
+    none of their element sets would pass the age limit in ``compute_residuals``.
+    """
     groups: dict[str, list[Path]] = {}
     for path in sorted(cache_dir.glob("gp_*_*.json")):
         group = path.stem[len("gp_"):].rsplit("_", 1)[0]
         groups.setdefault(group, []).append(path)
     pairs = []
     for paths in groups.values():
-        snaps = [validate_records(json.loads(p.read_text())) for p in paths]
-        for i in range(len(snaps)):
-            for j in range(i + 1, len(snaps)):
-                pairs.append((snaps[i], snaps[j]))
+        paths = paths[-max_snapshots:]  # file names sort by fetch time
+        times = [_fetched_at(p) for p in paths]
+        snaps: dict[int, list[dict]] = {}
+
+        def load(i: int) -> list[dict]:
+            if i not in snaps:
+                snaps[i] = validate_records(json.loads(paths[i].read_text()))
+            return snaps[i]
+
+        for i in range(len(paths)):
+            for j in range(i + 1, len(paths)):
+                if (times[j] - times[i]).total_seconds() / 86400.0 <= max_gap_days:
+                    pairs.append((load(i), load(j)))
     return pairs
 
 
 def calibrate_from_cache(cache_dir: Path, today: datetime | None = None
                          ) -> tuple[PopulationCovariance, dict, int] | None:
-    """Fit per-population models from every pair of cached snapshots.
+    """Fit per-population models from pairs of recent cached snapshots.
 
-    Returns (model, summaries, number of snapshot pairs), or None when there is not
-    yet a group with two snapshots.
+    Returns (model, summaries, number of snapshot pairs), or None when the cache does
+    not yet hold enough snapshots close enough together to fit from.
     """
     pairs = load_snapshot_pairs(cache_dir)
     if not pairs:
         return None
     parts = [compute_residuals(old, new) for old, new in pairs]
+    if sum(len(p.age_days) for p in parts) < MIN_RESIDUALS:
+        return None
     res = Residuals(
         norad_ids=np.concatenate([p.norad_ids for p in parts]),
         names=[n for p in parts for n in p.names],
