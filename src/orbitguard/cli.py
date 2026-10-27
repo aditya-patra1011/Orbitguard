@@ -187,6 +187,20 @@ def _cmd_db_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_site(args: argparse.Namespace) -> int:
+    from orbitguard.site import export_site
+    from orbitguard.store import make_engine
+
+    summary = export_site(make_engine(args.db_url), args.out, top=args.top)
+    if summary["run"] is None:
+        print(f"Wrote {args.out}, but there is no screening run yet: the dashboard will say so")
+        return 0
+    run = summary["run"]
+    print(f"Wrote {args.out}: run {run['id']} ({run['objects_screened']} objects, "
+          f"{summary['counts']['1e-4']} encounters with Pc >= 1e-4)")
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     import os
 
@@ -297,6 +311,12 @@ def main(argv: list[str] | None = None) -> int:
                      help="Result files (default: data/processed/conjunctions_*.json)")
     imp.add_argument("--db-url", default=None, help=DB_URL_HELP)
     imp.set_defaults(func=_cmd_db_import)
+
+    ex = sub.add_parser("export-site", help="Write the dashboard and latest run as a static site")
+    ex.add_argument("--out", type=Path, default=Path("site"), help="Output folder (replaced)")
+    ex.add_argument("--top", type=int, default=1000, help="Highest-Pc encounters to include")
+    ex.add_argument("--db-url", default=None, help=DB_URL_HELP)
+    ex.set_defaults(func=_cmd_export_site)
 
     s = sub.add_parser("serve", help="Run the HTTP API (needs the [api] extra)")
     s.add_argument("--host", default="127.0.0.1")
