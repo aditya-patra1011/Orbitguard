@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Iterable
 
 from sqlalchemy import (
-    Boolean, DateTime, Float, ForeignKey, Integer, String, create_engine, func, insert, select,
+    Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, func, insert,
+    select,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
@@ -61,6 +62,43 @@ class ConjunctionRow(Base):
     pc: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
 
     run: Mapped[Run] = relationship(back_populates="conjunctions")
+
+
+class PipelineRun(Base):
+    """One execution of `orbitguard pipeline run`, successful or not."""
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(30), index=True)   # success | failed_validation | error
+    groups: Mapped[str] = mapped_column(String(500))
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id", ondelete="SET NULL"),
+                                               nullable=True)
+    metrics: Mapped[str] = mapped_column(Text, default="{}")      # JSON
+    validation: Mapped[str] = mapped_column(Text, default="[]")   # JSON, one report per group
+    drift_alerts: Mapped[str] = mapped_column(Text, default="[]")  # JSON
+    message: Mapped[str] = mapped_column(Text, default="")
+
+
+def save_pipeline_run(session: Session, **fields) -> PipelineRun:
+    for key in ("metrics", "validation", "drift_alerts"):
+        if key in fields and not isinstance(fields[key], str):
+            fields[key] = json.dumps(fields[key])
+    run = PipelineRun(**fields)
+    session.add(run)
+    session.flush()
+    return run
+
+
+def list_pipeline_runs(session: Session, limit: int = 20,
+                       status: str | None = None, groups: str | None = None) -> list[PipelineRun]:
+    stmt = select(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(limit)
+    if status:
+        stmt = stmt.where(PipelineRun.status == status)
+    if groups:
+        stmt = stmt.where(PipelineRun.groups == groups)
+    return list(session.scalars(stmt))
 
 
 def database_url() -> str:

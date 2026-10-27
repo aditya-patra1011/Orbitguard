@@ -170,3 +170,26 @@ def load_snapshot_pairs(cache_dir: Path) -> list[tuple[list[dict], list[dict]]]:
             for j in range(i + 1, len(snaps)):
                 pairs.append((snaps[i], snaps[j]))
     return pairs
+
+
+def calibrate_from_cache(cache_dir: Path, today: datetime | None = None
+                         ) -> tuple[PopulationCovariance, dict, int] | None:
+    """Fit per-population models from every pair of cached snapshots.
+
+    Returns (model, summaries, number of snapshot pairs), or None when there is not
+    yet a group with two snapshots.
+    """
+    pairs = load_snapshot_pairs(cache_dir)
+    if not pairs:
+        return None
+    parts = [compute_residuals(old, new) for old, new in pairs]
+    res = Residuals(
+        norad_ids=np.concatenate([p.norad_ids for p in parts]),
+        names=[n for p in parts for n in p.names],
+        age_days=np.concatenate([p.age_days for p in parts]),
+        rtn_km=np.concatenate([p.rtn_km for p in parts]),
+    )
+    today = today or datetime.now(timezone.utc)
+    model, summaries = fit_populations(
+        res, source=f"calibrated {today:%Y-%m-%d} from {len(res.age_days)} element-set pairs")
+    return model, summaries, len(pairs)

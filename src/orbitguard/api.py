@@ -6,6 +6,7 @@ documentation is served at ``/docs``.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -21,7 +22,8 @@ from sqlalchemy.orm import Session
 
 from orbitguard import __version__
 from orbitguard.store import (
-    ConjunctionQuery, ConjunctionRow, Run, latest_run, list_runs, make_engine, query_conjunctions,
+    ConjunctionQuery, ConjunctionRow, Run, latest_run, list_pipeline_runs, list_runs, make_engine,
+    query_conjunctions,
 )
 
 log = logging.getLogger(__name__)
@@ -86,6 +88,36 @@ class ConjunctionPage(BaseModel):
     limit: int
     offset: int
     items: list[ConjunctionOut]
+
+
+class PipelineRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    started_at: datetime
+    finished_at: datetime
+    status: str
+    groups: list[str]
+    run_id: int | None
+    metrics: dict
+    drift_alerts: list[dict]
+    validation: list[dict]
+    message: str
+
+    @field_validator("groups", mode="before")
+    @classmethod
+    def _split_groups(cls, v):
+        return v.split(",") if isinstance(v, str) else v
+
+    @field_validator("metrics", "drift_alerts", "validation", mode="before")
+    @classmethod
+    def _parse_json(cls, v):
+        return json.loads(v) if isinstance(v, str) else v
+
+    @field_validator("started_at", "finished_at")
+    @classmethod
+    def _utc(cls, v):
+        return _as_utc(v)
 
 
 class Health(BaseModel):
@@ -240,6 +272,15 @@ def create_app(engine: Engine | None = None, risk_model_path: Path | None = None
             norad_id=norad_id, include_co_orbital=True, limit=limit, offset=offset))
         return ConjunctionPage(total=total, limit=limit, offset=offset,
                                items=[ConjunctionOut.model_validate(r) for r in rows])
+
+    @app.get("/pipeline/runs", response_model=list[PipelineRunOut], tags=["monitoring"])
+    def pipeline_runs(
+        session: SessionDep,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+        status: Literal["success", "failed_validation", "error"] | None = None,
+    ):
+        """Recent pipeline executions with validation reports, metrics and drift alerts."""
+        return list_pipeline_runs(session, limit=limit, status=status)
 
     @app.post("/risk/forecast", response_model=RiskResponse, tags=["risk model"])
     def risk_forecast(body: RiskRequest, request: Request):
