@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -51,6 +53,21 @@ def test_uncertainty_along_relative_velocity_is_irrelevant():
 def test_far_miss_is_negligible_and_bounded():
     pc = collision_probability(np.array([50.0, 0, 0]), np.array([0, 7.0, 0]), 0.01 * np.eye(3), 0.01)
     assert 0.0 <= pc < 1e-12
+
+
+def test_far_miss_off_the_principal_axes_gives_no_integration_warning():
+    # A real screening event, miss ~6 sigma on the negative side of the minor axis.
+    # It used to raise IntegrationWarning: both ndtr terms were ~1, so their difference
+    # was mostly roundoff, and quad chased 1e-9 relative accuracy with no absolute floor.
+    dr = np.array([-0.3046, 2.8158, 0.0499])
+    dv = np.array([-1.2232, 0.0975, -14.6979])
+    cov = np.array([[0.134215, 0.04506, 0.57711],
+                    [0.04506, 0.239499, 0.293042],
+                    [0.57711, 0.293042, 6.304843]])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        pc = collision_probability(dr, dv, cov, 0.01)
+    assert pc == pytest.approx(4.6018e-12, rel=1e-4)
 
 
 def test_dilution_region_larger_uncertainty_can_lower_pc():
