@@ -7,7 +7,13 @@ FROM python:3.14-slim AS build
 WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir --prefix=/install ".[ml,api,postgres]"
+# Retry settings ride out slow or flaky connections. They are environment variables,
+# not flags, so the separate pip that installs build tools (setuptools) gets them too.
+ENV PIP_RETRIES=10 PIP_TIMEOUT=60 PIP_RESUME_RETRIES=10
+# The cache mount keeps downloaded wheels between builds, so a code change does not
+# re-download ~400 MB.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --prefix=/install ".[ml,api,postgres]"
 
 # ---- runtime stage: no compilers, no source tree, non-root user
 FROM python:3.14-slim
