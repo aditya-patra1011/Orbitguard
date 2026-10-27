@@ -59,9 +59,21 @@ def test_latest_risk_prediction_clips_low_values():
 
 
 def test_unseen_category_at_prediction_time(model):
+    import warnings
     test = synthetic(seed=4)
     test.X["c_object_type"] = pd.Categorical(["ROCKET BODY"] * len(test.y))
-    assert model.predict(test.X).notna().all()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")      # no deprecation warnings: they become errors later
+        pred = model.predict(test.X)
+    assert pred.notna().all()
+
+
+def test_unseen_values_become_missing_not_errors():
+    known = pd.DataFrame({"c_object_type": pd.Categorical(["DEBRIS"]), "mission_id": pd.Categorical([1])})
+    new = pd.DataFrame({"c_object_type": ["DEBRIS", "ROCKET BODY"], "mission_id": [1, 99]})
+    align_categories(new, categories=align_categories(known))
+    assert new["c_object_type"].tolist()[0] == "DEBRIS" and pd.isna(new["c_object_type"].iloc[1])
+    assert pd.isna(new["mission_id"].iloc[1])
 
 
 def test_save_load_round_trip(model, tmp_path):

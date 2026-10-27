@@ -67,7 +67,11 @@ def align_categories(*frames: pd.DataFrame, categories: dict | None = None) -> d
                       for c in CATEGORICAL}
     for f in frames:
         for c, cats in categories.items():
-            f[c] = f[c].astype("object").astype(pd.CategoricalDtype(cats))
+            values = f[c].astype("object")
+            # Values never seen in training become missing explicitly: casting them
+            # implicitly is deprecated in pandas and will raise in a future version.
+            values = values.where(values.isin(cats))
+            f[c] = values.astype(pd.CategoricalDtype(cats))
     return categories
 
 
