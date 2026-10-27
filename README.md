@@ -8,7 +8,9 @@ OrbitGuard pulls the latest public orbital element sets, propagates every object
 finds close approaches between all pairs, and scores each one with a probability of collision
 (Pc) using position uncertainty **measured** from the data itself. A machine-learning model,
 trained on ESA's real conjunction data messages, forecasts an event's final risk two days
-before closest approach. Both are served by an HTTP API, packaged with Docker and PostgreSQL.
+before closest approach. Both are served by an HTTP API, packaged with Docker and PostgreSQL, and
+a scheduled pipeline refreshes the data every 6 hours, validates it, recalibrates the
+uncertainty and watches its own metrics for drift.
 
 ```
 docker compose up -d --build        # PostgreSQL + API on http://localhost:8000 (docs at /docs)
@@ -178,6 +180,52 @@ API and a `cli` service for one-off jobs (`docker compose run --rm cli db import
   stored strings with pyarrow on the training machine and the image lacked it. The fix (matching
   dependencies, and logging the real error instead of a guess) is in the history.
 
+## Phase 5: pipeline and MLOps
+
+```
+python -m orbitguard validate --all                       # check the cached snapshots
+python -m orbitguard pipeline run --group starlink --group fengyun-1c-debris
+docker compose --profile scheduler up -d                  # the same pipeline every 6 hours
+```
+
+One command runs the whole loop, records it and refuses to work from bad data:
+
+```
+fetch ──► validate ──► recalibrate ──► screen ──► store ──► metrics ──► drift check
+           │ errors stop the run         (exactly the validated files)      │
+           └──► status "failed_validation"                     alerts if a metric jumps
+```
+
+- **Data validation.** Every snapshot is checked before use. *Errors* stop the run: an empty
+  download, more than 1 % invalid records, epochs more than a day in the future, or the object
+  count changing by more than 20 % since the last snapshot. *Warnings* are recorded but do not
+  stop it: duplicate IDs, a median element-set age over 3 days, more than 20 % of sets older
+  than 14 days. Screening then reads exactly the files that passed, never a fresh download.
+- **Run records.** Each run stores its status, per-group validation report, metrics (objects
+  screened, conjunctions per 1,000 objects, high-risk events, max Pc, element-set age, calibrated
+  uncertainty, screening time) and any drift alerts. `GET /pipeline/runs` serves them.
+- **Drift monitoring.** Each metric is compared with the last 10 successful runs using a robust
+  z-score (median and MAD, so one odd run cannot hide the next); |z| > 3 raises an alert. It
+  starts once 3 earlier runs exist.
+- **Scheduler.** `pipeline schedule` runs every 6 hours (minimum 2 hours, to respect CelesTrak's
+  limits) and finishes the current run on `SIGTERM` before exiting; in Compose it is an opt-in
+  `scheduler` profile that shares the snapshot cache.
+- **CI.** GitHub Actions runs the test suite on Python 3.14 for every pull request, then builds
+  the Docker image and smoke-tests it: health check, non-root user, empty database, and a 503
+  (not a crash) from `/risk/forecast` when no model is present.
+
+**Found by running it, fixed with tests.** Running the scheduler for real exposed four problems:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| A run failed on a cut-off Starlink download | One dropped connection was fatal | Up to 3 attempts with backoff for dropped, timed-out and truncated downloads |
+| The image build failed with "No matching distribution" | PyPI timed out on a slow connection | pip retries and resumes; a cache mount keeps downloaded packages between builds |
+| Starlink's along-track 1σ at 2 days jumped from 38 km to 119 km | Snapshots a week apart entered the fit; along-track error grows faster than linearly (~30 km at 2 days, ~400 km at 8) | Fit only pairs up to 3 days apart, from each group's latest 8 snapshots: back to 38.0 km |
+| `IntegrationWarning` on 61 of 64,324 Pc calls | Cancellation between two values of ~1, and a relative-only error target for Pc as small as 1e-300 | Use the symmetric form that stays in the accurate tail, plus a 1e-20 absolute floor. Pc unchanged, 40 % faster |
+
+A typical scheduled run in Docker: 14,394 objects screened in about 200 s, roughly 66,000
+conjunctions under 5 km, 8 or 9 events with Pc ≥ 1e-4, all validation checks passing.
+
 ## Honest limitations
 
 - **The API has no authentication** and the Compose file uses a default database password: it is
@@ -191,9 +239,15 @@ API and a `cli` service for one-off jobs (`docker compose run --rm cli db import
   pair's Pc is diluted to near zero whatever the true geometry (the *dilution region*). Operators
   solve this with their own precise ephemerides; public data cannot. Phase 3 addresses risk
   estimation under exactly this kind of uncertainty.
-- **The calibration is young.** Two snapshots ~2 days apart give ages clustered around 2 days, so
-  the error at epoch (`sigma0`) is not yet separable from growth and fits to ~0 (floored at 1 m).
-  Each new screening run caches a snapshot, so the fit improves as data accumulates.
+- **The uncertainty model is linear in age.** It is fitted only to element sets up to 3 days
+  apart, the range screening uses; beyond that along-track error grows faster than linearly and
+  the model would understate it. `sigma0` (error at epoch) is still poorly separated from growth
+  and often fits to ~0 (floored at 1 m); the 6-hourly snapshots will sharpen it.
+- **The ML model is not retrained automatically.** The ESA CDM dataset is a fixed, historical
+  release, so there is nothing new to retrain on; the pipeline automates what does change, the
+  uncertainty calibration. Retraining needs a live CDM feed (Space-Track, operator data).
+- **Drift monitoring alerts but does not act.** Alerts are stored and served by the API; nothing
+  pages a person or pauses the pipeline yet.
 - **The reference is itself an estimate.** The newer element set has its own error, so measured
   spreads are slightly conservative.
 - **Hard-body radius is assumed** (10 m combined) because object sizes are not used yet.
@@ -208,7 +262,7 @@ API and a `cli` service for one-off jobs (`docker compose run --rm cli db import
 | 2 ✅ | Collision probability | 2-D encounter-plane Pc; RTN covariance model calibrated per population from successive element sets |
 | 3 ✅ | ML risk model | ESA CDM data; exact reproduction of the competition metric and baselines; latest-risk backbone with learned value and late-riser corrections; pre-registered, one-time test evaluation |
 | 4 ✅ | Serving | Results database (SQLite / PostgreSQL), FastAPI service for conjunctions and risk forecasts, Docker image and Compose stack |
-| 5 | Pipeline + MLOps | Scheduled screening and recalibration, data validation, drift monitoring, retraining, CI/CD |
+| 5 ✅ | Pipeline + MLOps | Data validation, one-command pipeline with run records and metrics, drift monitoring, 6-hourly scheduler in Docker, download retries, CI (tests + Docker smoke test) |
 | 6 | Dashboard | 3-D globe (CesiumJS) with live high-risk events, deployed publicly |
 
 ## Development
