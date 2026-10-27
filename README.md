@@ -1,5 +1,7 @@
 # OrbitGuard
 
+[![CI](https://github.com/aditya-patra1011/Orbitguard/actions/workflows/ci.yml/badge.svg)](https://github.com/aditya-patra1011/Orbitguard/actions/workflows/ci.yml)
+
 Orbital conjunction screening and ML-based collision risk assessment for objects in Earth orbit.
 
 OrbitGuard pulls the latest public orbital element sets, propagates every object with SGP4,
