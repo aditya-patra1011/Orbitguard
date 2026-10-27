@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -31,6 +32,7 @@ from orbitguard.store import (
 log = logging.getLogger(__name__)
 
 DEFAULT_RISK_MODEL_PATH = Path("data/models/cdm_risk_model.joblib")
+WEB_DIR = Path(__file__).parent / "web"
 MAX_PAGE = 500
 
 
@@ -324,6 +326,8 @@ def create_app(engine: Engine | None = None, risk_model_path: Path | None = None
             raise HTTPException(503, "Risk model not loaded; train it with `orbitguard risk train`")
         return forecast_events(model, body.events)
 
+    # The dashboard: static files at the root. Mounted last, so every API route above wins.
+    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="dashboard")
     return app
 
 

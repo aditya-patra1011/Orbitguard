@@ -176,3 +176,14 @@ def test_run_elements_are_served_compressed_with_populations(tmp_path):
         assert body["objects"][0]["tle1"].startswith("1 44713U")
         assert c.get(f"/runs/{old_id}/elements").status_code == 404   # not kept
         assert c.get("/runs/999/elements").status_code == 404
+
+
+def test_dashboard_is_served_at_the_root_without_shadowing_the_api(client):
+    page = client.get("/")
+    assert page.status_code == 200 and "text/html" in page.headers["content-type"]
+    assert "<title>OrbitGuard</title>" in page.text
+    for asset in ("app.js", "worker.js", "style.css"):
+        assert client.get(f"/{asset}").status_code == 200
+    assert client.get("/health").json()["status"] == "ok"   # API routes still win
+    assert client.get("/docs").status_code == 200
+    assert client.get("/no-such-page").status_code == 404
