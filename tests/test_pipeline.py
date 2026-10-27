@@ -119,3 +119,32 @@ def test_detect_drift_is_robust_to_one_outlier_in_history():
 
 def test_detect_drift_needs_minimum_history():
     assert detect_drift({"m": 1e9}, [{"m": 1}, {"m": 1}], metrics=("m",)) == []
+
+
+def test_schedule_keeps_going_after_failures_and_stops_on_request():
+    import threading
+    from orbitguard.pipeline import PipelineOutcome, run_on_schedule
+
+    class NoSleep(threading.Event):
+        """Stop event whose wait() returns at once, so the test does not sleep for hours."""
+        def wait(self, timeout=None):
+            return self.is_set()
+
+    stop = NoSleep()
+    statuses = ["error", "success", "failed_validation"]
+    calls = []
+
+    def once():
+        calls.append(statuses[len(calls)])
+        if len(calls) == len(statuses):
+            stop.set()                    # e.g. SIGTERM arrives during the third run
+        return PipelineOutcome(status=calls[-1], pipeline_run_id=len(calls))
+
+    outcomes = run_on_schedule(once, every_s=2 * 3600, stop=stop)
+    assert [o.status for o in outcomes] == statuses   # an error did not end the schedule
+
+
+def test_schedule_refuses_intervals_shorter_than_celestrak_updates():
+    from orbitguard.pipeline import run_on_schedule
+    with pytest.raises(ValueError, match="at least 2 h"):
+        run_on_schedule(lambda: None, every_s=600)

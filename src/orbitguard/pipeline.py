@@ -203,3 +203,33 @@ def run_pipeline(cfg: PipelineConfig, engine: Engine, now: datetime | None = Non
     except Exception as exc:  # noqa: BLE001 - record every failure, then report it
         log.exception("Pipeline failed")
         return finish("error", message=f"{type(exc).__name__}: {exc}")
+
+
+MIN_INTERVAL_S = 2 * 3600  # CelesTrak publishes about every 2 hours; faster gains nothing
+
+
+def run_on_schedule(run_once: Callable[[], PipelineOutcome], every_s: float,
+                    stop: "threading.Event | None" = None, max_runs: int | None = None
+                    ) -> list[PipelineOutcome]:
+    """Run ``run_once`` every ``every_s`` seconds until ``stop`` is set.
+
+    A failed run does not stop the schedule: it is recorded and the next run happens on
+    time. The interval is measured start to start, so slow runs do not drift the clock.
+    """
+    import threading
+
+    if every_s < MIN_INTERVAL_S:
+        raise ValueError(f"Interval must be at least {MIN_INTERVAL_S / 3600:g} h "
+                         "(CelesTrak updates about every 2 hours)")
+    stop = stop or threading.Event()
+    outcomes = []
+    while not stop.is_set():
+        started = time.monotonic()
+        outcome = run_once()
+        outcomes.append(outcome)
+        log.info("Scheduled run %s: %s", outcome.pipeline_run_id, outcome.status)
+        if max_runs is not None and len(outcomes) >= max_runs:
+            break
+        # Wait for the next slot; returns early as soon as a stop is requested.
+        stop.wait(max(0.0, every_s - (time.monotonic() - started)))
+    return outcomes

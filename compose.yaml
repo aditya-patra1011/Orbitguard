@@ -3,7 +3,8 @@
 #   docker compose up -d --build                     # database + API on http://localhost:8000
 #   docker compose run --rm cli db import            # load existing results from ./data/processed
 #   docker compose run --rm cli screen --group starlink --group fengyun-1c-debris --store
-#   docker compose down                              # stop (data persists in the pgdata volume)
+#   docker compose --profile scheduler up -d         # also run the pipeline every 6 hours
+#   docker compose --profile scheduler down          # stop (data persists in the pgdata volume)
 #
 # Local development only: the database password defaults to "orbitguard" and the
 # database port is not published. Set POSTGRES_PASSWORD in a .env file to change it.
@@ -40,6 +41,21 @@ services:
     volumes:
       - ./data/models:/app/data/models:ro      # trained risk model (optional)
     restart: unless-stopped
+
+  # Automatic pipeline every 6 h: fetch -> validate -> recalibrate -> screen -> store -> drift.
+  # Start with: docker compose --profile scheduler up -d
+  scheduler:
+    <<: *orbitguard
+    command: ["orbitguard", "pipeline", "schedule", "--every-hours", "6",
+              "--group", "starlink", "--group", "oneweb", "--group", "cosmos-2251-debris",
+              "--group", "iridium-33-debris", "--group", "fengyun-1c-debris"]
+    volumes:
+      - ./data:/app/data                       # snapshot cache feeds recalibration
+    stop_grace_period: 10m                     # let a running screen finish on stop
+    restart: unless-stopped
+    healthcheck:
+      disable: true                            # no HTTP server in this container
+    profiles: ["scheduler"]
 
   # One-off CLI jobs: `docker compose run --rm cli <command>`.
   cli:
