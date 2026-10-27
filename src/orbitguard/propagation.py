@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
-from sgp4 import omm
+from sgp4 import exporter, omm
 from sgp4.api import Satrec, SatrecArray, jday
 
 log = logging.getLogger(__name__)
@@ -50,6 +50,19 @@ def propagate_one(sat: Satrec, t: datetime) -> tuple[np.ndarray, np.ndarray]:
     if err:
         raise ValueError(f"SGP4 error {err} for satellite {sat.satnum}")
     return np.array(r), np.array(v)
+
+
+def element_sets(catalog: Catalog) -> list[dict]:
+    """The catalog's satellites as two-line elements, for storing with a run.
+
+    Exported from the initialised satellites themselves, so a client propagating these
+    lines (e.g. satellite.js) sees what screening saw: within ~10 m over a day.
+    """
+    out = []
+    for nid, name, sat in zip(catalog.norad_ids, catalog.names, catalog.satrecs):
+        line1, line2 = exporter.export_tle(sat)
+        out.append({"norad_id": int(nid), "name": name, "tle1": line1, "tle2": line2})
+    return out
 
 
 def perigee_apogee_km(rec: dict) -> tuple[float, float]:

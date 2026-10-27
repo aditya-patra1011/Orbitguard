@@ -26,9 +26,11 @@ from sqlalchemy.orm import Session
 from orbitguard.calibration import calibrate_from_cache
 from orbitguard.covariance import DEFAULT_MODEL, load_covariance
 from orbitguard.ingest import DEFAULT_CACHE_DIR, fetch_group, validate_records
-from orbitguard.propagation import build_catalog
+from orbitguard.propagation import build_catalog, element_sets
 from orbitguard.screening import screen
-from orbitguard.store import PipelineRun, list_pipeline_runs, save_pipeline_run, save_result
+from orbitguard.store import (
+    PipelineRun, list_pipeline_runs, save_pipeline_run, save_result, save_run_elements,
+)
 from orbitguard.validation import validate_latest
 
 log = logging.getLogger(__name__)
@@ -174,6 +176,7 @@ def run_pipeline(cfg: PipelineConfig, engine: Engine, now: datetime | None = Non
         (cfg.results_dir / f"conjunctions_{started:%Y%m%dT%H%M%SZ}.json").write_text(json.dumps(result))
         with Session(engine) as session:
             run_id = save_result(session, result).id
+            save_run_elements(session, run_id, element_sets(catalog))  # for the dashboard
             session.commit()
 
         # 6. Metrics and drift.

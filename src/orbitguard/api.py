@@ -15,15 +15,17 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from orbitguard import __version__
+from orbitguard.covariance import population
 from orbitguard.store import (
-    ConjunctionQuery, ConjunctionRow, Run, latest_run, list_pipeline_runs, list_runs, make_engine,
-    query_conjunctions,
+    ConjunctionQuery, ConjunctionRow, Run, get_run_elements, latest_run, list_pipeline_runs,
+    list_runs, make_engine, query_conjunctions,
 )
 
 log = logging.getLogger(__name__)
@@ -88,6 +90,21 @@ class ConjunctionPage(BaseModel):
     limit: int
     offset: int
     items: list[ConjunctionOut]
+
+
+class ElementSetOut(BaseModel):
+    norad_id: int
+    name: str
+    population: str = Field(description="starlink, oneweb, debris or other")
+    tle1: str
+    tle2: str
+
+
+class RunElementsOut(BaseModel):
+    run_id: int
+    generated_at: datetime
+    count: int
+    objects: list[ElementSetOut]
 
 
 class PipelineRunOut(BaseModel):
@@ -195,6 +212,8 @@ def create_app(engine: Engine | None = None, risk_model_path: Path | None = None
                     "and final-risk forecasts for conjunction data messages.",
         lifespan=lifespan,
     )
+    # Element sets for a full catalogue are ~3 MB of JSON; compressed they are ~1 MB.
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     @app.get("/health", response_model=Health, tags=["service"])
     def health(request: Request, session: SessionDep):
@@ -230,6 +249,22 @@ def create_app(engine: Engine | None = None, risk_model_path: Path | None = None
         if run is None:
             raise HTTPException(404, f"Run {run_id} not found")
         return run
+
+    @app.get("/runs/{run_id}/elements", response_model=RunElementsOut, tags=["screening"])
+    def run_elements(run_id: int, session: SessionDep):
+        """The element sets (two-line elements) the run screened, for drawing its objects.
+
+        Kept only for recent runs; older runs return 404.
+        """
+        run = session.get(Run, run_id)
+        if run is None:
+            raise HTTPException(404, f"Run {run_id} not found")
+        objects = get_run_elements(session, run_id)
+        if objects is None:
+            raise HTTPException(404, f"Element sets are not kept for run {run_id}")
+        return RunElementsOut(
+            run_id=run_id, generated_at=_as_utc(run.generated_at), count=len(objects),
+            objects=[ElementSetOut(population=population(o["name"]), **o) for o in objects])
 
     @app.get("/conjunctions", response_model=ConjunctionPage, tags=["screening"])
     def conjunctions(

@@ -5,7 +5,9 @@ import pytest
 from sqlalchemy.orm import Session
 
 from orbitguard.pipeline import PipelineConfig, detect_drift, run_pipeline
-from orbitguard.store import list_pipeline_runs, list_runs, make_engine, save_pipeline_run
+from orbitguard.store import (
+    get_run_elements, list_pipeline_runs, list_runs, make_engine, save_pipeline_run,
+)
 from test_orbitguard import EPOCH, _crossing_pair, make_record
 
 NOW = EPOCH  # the synthetic crossing happens ~16 min after epoch
@@ -49,6 +51,8 @@ def test_successful_run_stores_results_and_metrics(setup):
     with Session(engine) as s:
         assert len(list_runs(s)) == 1
         assert list_pipeline_runs(s)[0].status == "success"
+        elements = get_run_elements(s, out.run_id)   # kept for the dashboard
+        assert len(elements) == 2 and elements[0]["tle1"].startswith("1 ")
 
 
 def test_validation_failure_stops_before_screening(setup):

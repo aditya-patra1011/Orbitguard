@@ -77,10 +77,12 @@ def _cmd_screen(args: argparse.Namespace) -> int:
     if args.store:
         from sqlalchemy.orm import Session
 
-        from orbitguard.store import make_engine, save_result
+        from orbitguard.propagation import element_sets
+        from orbitguard.store import make_engine, save_result, save_run_elements
 
         with Session(make_engine(args.db_url)) as session:
             run = save_result(session, result)
+            save_run_elements(session, run.id, element_sets(catalog))
             session.commit()
             print(f"Stored as run {run.id} in {session.get_bind().url.render_as_string(hide_password=True)}")
     return 0

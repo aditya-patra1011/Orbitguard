@@ -64,6 +64,18 @@ class ConjunctionRow(Base):
     run: Mapped[Run] = relationship(back_populates="conjunctions")
 
 
+class RunElements(Base):
+    """The element sets a run screened, as two-line elements, for drawing its objects.
+
+    About 3 MB per run, so only the latest runs keep them (see ``save_run_elements``).
+    """
+    __tablename__ = "run_elements"
+
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    n_objects: Mapped[int] = mapped_column(Integer)
+    objects: Mapped[str] = mapped_column(Text)   # JSON: [{norad_id, name, tle1, tle2}, ...]
+
+
 class PipelineRun(Base):
     """One execution of `orbitguard pipeline run`, successful or not."""
     __tablename__ = "pipeline_runs"
@@ -161,6 +173,28 @@ def save_result(session: Session, result: dict) -> Run:
             for c in conjunctions
         ])
     return run
+
+
+ELEMENTS_KEPT_RUNS = 10
+
+
+def save_run_elements(session: Session, run_id: int, objects: list[dict],
+                      keep_runs: int = ELEMENTS_KEPT_RUNS) -> None:
+    """Store a run's element sets and drop those of all but the latest ``keep_runs`` runs.
+
+    Conjunctions are kept for every run; only the bulky element sets are pruned.
+    """
+    session.merge(RunElements(run_id=run_id, n_objects=len(objects), objects=json.dumps(objects)))
+    session.flush()
+    keep = select(Run.id).order_by(Run.generated_at.desc()).limit(keep_runs)
+    for old in session.scalars(select(RunElements).where(RunElements.run_id.not_in(keep))):
+        session.delete(old)
+    session.flush()
+
+
+def get_run_elements(session: Session, run_id: int) -> list[dict] | None:
+    row = session.get(RunElements, run_id)
+    return None if row is None else json.loads(row.objects)
 
 
 def import_files(session: Session, paths: Iterable[Path]) -> list[Run]:
