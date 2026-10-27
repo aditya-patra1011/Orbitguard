@@ -90,6 +90,27 @@ def _cmd_screen(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_validate(args: argparse.Namespace) -> int:
+    from orbitguard.validation import validate_latest
+
+    groups = args.group or sorted({p.stem[len("gp_"):].rsplit("_", 1)[0]
+                                   for p in args.cache_dir.glob("gp_*_*.json")})
+    if not groups:
+        print(f"No cached snapshots in {args.cache_dir}")
+        return 1
+    failed = False
+    for group in groups:
+        report = validate_latest(group, cache_dir=args.cache_dir)
+        status = "OK" if report.ok and not report.warnings else ("WARN" if report.ok else "FAIL")
+        print(f"[{status:4}] {group:<22} {report.n_records:>6} records  {report.snapshot}")
+        for c in report.checks:
+            if not c.passed or args.verbose_checks:
+                mark = "pass" if c.passed else c.severity
+                print(f"         {mark:<7} {c.name}: {c.detail}")
+        failed |= not report.ok
+    return 1 if failed else 0
+
+
 def _cmd_db_import(args: argparse.Namespace) -> int:
     from sqlalchemy.orm import Session
 
@@ -189,6 +210,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="Also save the run to the results database (needs the [api] extra)")
     p.add_argument("--db-url", default=None, help=DB_URL_HELP)
     p.set_defaults(func=_cmd_screen)
+
+    v = sub.add_parser("validate", help="Check the newest cached snapshot of each group")
+    v.add_argument("--group", action="append", help="Group to check (default: all cached)")
+    v.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    v.add_argument("--all", dest="verbose_checks", action="store_true", help="Show passing checks too")
+    v.set_defaults(func=_cmd_validate)
 
     db = sub.add_parser("db", help="Results database")
     db_sub = db.add_subparsers(dest="db_command", required=True)
