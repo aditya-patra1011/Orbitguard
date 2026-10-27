@@ -5,8 +5,8 @@ import pytest
 from sqlalchemy.orm import Session
 
 from orbitguard.store import (
-    ConjunctionQuery, import_files, latest_run, list_runs, make_engine, query_conjunctions,
-    save_result,
+    ConjunctionQuery, get_run_elements, import_files, latest_run, list_runs, make_engine,
+    query_conjunctions, save_result, save_run_elements,
 )
 
 
@@ -88,3 +88,16 @@ def test_import_files_skips_duplicates_and_reads_phase1_format(session, tmp_path
     assert import_files(session, paths) == []          # already stored
     phase1 = min(list_runs(session), key=lambda r: r.generated_at)
     assert phase1.conjunctions[0].co_orbital is True and phase1.hard_body_radius_m is None
+
+
+def test_element_sets_are_kept_only_for_the_latest_runs():
+    with Session(make_engine("sqlite://")) as session:
+        ids = []
+        for day in (20, 21, 22):
+            run = save_result(session, result(f"2026-10-{day}T00:00:00+00:00", []))
+            save_run_elements(session, run.id, [{"norad_id": day, "name": "X", "tle1": "1", "tle2": "2"}],
+                              keep_runs=2)
+            ids.append(run.id)
+        assert get_run_elements(session, ids[0]) is None           # pruned
+        assert get_run_elements(session, ids[2])[0]["norad_id"] == 22
+        assert len(list_runs(session)) == 3                         # runs themselves are kept

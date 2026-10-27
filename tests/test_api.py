@@ -149,3 +149,30 @@ def test_pipeline_runs_endpoint(client):
     assert runs[1]["drift_alerts"] == [{"metric": "x"}]
     assert len(client.get("/pipeline/runs", params={"status": "success"}).json()) == 1
     assert client.get("/pipeline/runs", params={"status": "nope"}).status_code == 422
+
+
+def test_run_elements_are_served_compressed_with_populations(tmp_path):
+    from orbitguard.propagation import build_catalog, element_sets
+    from orbitguard.store import save_run_elements
+    from test_orbitguard import EPOCH, make_record
+
+    catalog = build_catalog([make_record(44713, 53.0, 0.0, name="STARLINK-1007"),
+                             make_record(30266, 98.0, 90.0, name="FENGYUN 1C DEB")], at=EPOCH)
+    engine = make_engine("sqlite://")
+    with Session(engine) as s:
+        old = save_result(s, result("2026-10-24T00:00:00+00:00", []))
+        run = save_result(s, result())
+        filler = [{"norad_id": 90000 + i, "name": f"OBJECT {i}", "tle1": "1", "tle2": "2"}
+                  for i in range(30)]   # enough bytes for the response to be compressed
+        save_run_elements(s, run.id, element_sets(catalog) + filler)
+        s.commit()
+        old_id, run_id = old.id, run.id
+    with TestClient(create_app(engine, risk_model_path=tmp_path / "none.joblib")) as c:
+        r = c.get(f"/runs/{run_id}/elements", headers={"Accept-Encoding": "gzip"})
+        assert r.status_code == 200 and r.headers["content-encoding"] == "gzip"
+        body = r.json()
+        assert body["count"] == 32
+        assert [o["population"] for o in body["objects"][:3]] == ["starlink", "debris", "other"]
+        assert body["objects"][0]["tle1"].startswith("1 44713U")
+        assert c.get(f"/runs/{old_id}/elements").status_code == 404   # not kept
+        assert c.get("/runs/999/elements").status_code == 404
