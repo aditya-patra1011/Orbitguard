@@ -76,3 +76,15 @@ def test_rate_limit_falls_back_to_cache(server, tmp_path):
     (tmp_path / "gp_g_20261027T050000Z.json").write_text(GOOD)  # 7 h old: too old to reuse
     server += [FakeResponse("Forbidden", status=403)]
     assert len(fetch(tmp_path)) == 2
+
+
+def test_prune_snapshots_keeps_the_newest_of_each_group(tmp_path):
+    from orbitguard.ingest import prune_snapshots
+    for group in ("starlink", "oneweb"):
+        for day in range(20, 25):
+            (tmp_path / f"gp_{group}_202610{day}T000000Z.json").write_text("[]")
+    removed = prune_snapshots(tmp_path, "starlink", keep=2)
+    assert [p.name for p in removed] == [f"gp_starlink_202610{d}T000000Z.json" for d in (20, 21, 22)]
+    assert sorted(p.name for p in tmp_path.glob("gp_starlink_*")) == [
+        "gp_starlink_20261023T000000Z.json", "gp_starlink_20261024T000000Z.json"]
+    assert len(list(tmp_path.glob("gp_oneweb_*"))) == 5   # other groups untouched

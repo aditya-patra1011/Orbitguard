@@ -23,13 +23,14 @@ from typing import Callable
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from orbitguard.calibration import calibrate_from_cache
+from orbitguard.calibration import MAX_SNAPSHOTS, calibrate_from_cache
 from orbitguard.covariance import DEFAULT_MODEL, load_covariance
-from orbitguard.ingest import DEFAULT_CACHE_DIR, fetch_group, validate_records
+from orbitguard.ingest import DEFAULT_CACHE_DIR, fetch_group, prune_snapshots, validate_records
 from orbitguard.propagation import build_catalog, element_sets
 from orbitguard.screening import screen
 from orbitguard.store import (
-    PipelineRun, list_pipeline_runs, save_pipeline_run, save_result, save_run_elements,
+    PipelineRun, compact, list_pipeline_runs, prune_conjunctions, save_pipeline_run, save_result,
+    save_run_elements,
 )
 from orbitguard.validation import validate_latest
 
@@ -56,6 +57,9 @@ class PipelineConfig:
     drift_window: int = 10        # recent successful runs used as the baseline
     drift_min_history: int = 3    # fewer runs than this: no drift verdict yet
     drift_z: float = 3.0          # robust z-score that raises an alert
+    # Retention, so an unattended pipeline does not fill its disk or cache. None keeps all.
+    keep_runs: int | None = 20                    # runs that keep their conjunctions (~10 MB each)
+    keep_snapshots: int | None = MAX_SNAPSHOTS    # per group; all that calibration reads
 
 
 @dataclass
@@ -177,7 +181,13 @@ def run_pipeline(cfg: PipelineConfig, engine: Engine, now: datetime | None = Non
         with Session(engine) as session:
             run_id = save_result(session, result).id
             save_run_elements(session, run_id, element_sets(catalog))  # for the dashboard
+            pruned = prune_conjunctions(session, cfg.keep_runs) if cfg.keep_runs else 0
             session.commit()
+        if pruned:
+            compact(engine)
+        if cfg.keep_snapshots:
+            for group in cfg.groups:
+                prune_snapshots(cfg.cache_dir, group, cfg.keep_snapshots)
 
         # 6. Metrics and drift.
         events = [c for c in conjunctions if not c.co_orbital]
