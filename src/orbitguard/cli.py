@@ -107,14 +107,48 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def _cmd_pipeline_run(args: argparse.Namespace) -> int:
-    from orbitguard.pipeline import PipelineConfig, run_pipeline
+def _pipeline_config(args: argparse.Namespace):
+    from orbitguard.pipeline import PipelineConfig
+
+    return PipelineConfig(groups=args.group, hours=args.hours, threshold_km=args.threshold,
+                          hbr_m=args.hbr_m, cache_dir=args.cache_dir,
+                          calibrate=not args.no_calibrate, refresh=args.refresh)
+
+
+def _cmd_pipeline_schedule(args: argparse.Namespace) -> int:
+    import signal
+    import threading
+
+    from orbitguard.pipeline import run_on_schedule, run_pipeline
     from orbitguard.store import make_engine
 
-    cfg = PipelineConfig(groups=args.group, hours=args.hours, threshold_km=args.threshold,
-                         hbr_m=args.hbr_m, cache_dir=args.cache_dir,
-                         calibrate=not args.no_calibrate, refresh=args.refresh)
-    out = run_pipeline(cfg, make_engine(args.db_url))
+    cfg, engine = _pipeline_config(args), make_engine(args.db_url)
+    stop = threading.Event()
+
+    def request_stop(signum, frame):
+        print("Stop requested; finishing after the current run.", flush=True)
+        stop.set()
+
+    signal.signal(signal.SIGTERM, request_stop)   # `docker compose stop`
+    signal.signal(signal.SIGINT, request_stop)    # Ctrl+C
+    print(f"Running the pipeline every {args.every_hours:g} h for {', '.join(cfg.groups)}", flush=True)
+
+    def once():
+        out = run_pipeline(cfg, engine)
+        alerts = f", {len(out.drift_alerts)} drift alert(s)" if out.drift_alerts else ""
+        print(f"[{datetime.now(timezone.utc):%Y-%m-%d %H:%M}Z] pipeline run {out.pipeline_run_id}: "
+              f"{out.status}{alerts} {out.message}".rstrip(), flush=True)
+        return out
+
+    run_on_schedule(once, args.every_hours * 3600, stop=stop)
+    return 0
+
+
+def _cmd_pipeline_run(args: argparse.Namespace) -> int:
+    from orbitguard.pipeline import run_pipeline
+    from orbitguard.store import make_engine
+
+    out = run_pipeline(_pipeline_config(args), make_engine(args.db_url))
     print(f"Pipeline run {out.pipeline_run_id}: {out.status.upper()}")
     for report in out.validation:
         problems = [c for c in report["checks"] if not c["passed"]]
@@ -237,15 +271,21 @@ def main(argv: list[str] | None = None) -> int:
     pl = sub.add_parser("pipeline", help="Fetch, validate, recalibrate, screen, store, monitor")
     pl_sub = pl.add_subparsers(dest="pipeline_command", required=True)
     plr = pl_sub.add_parser("run", help="Run the pipeline once (exit code 1 unless it succeeds)")
-    plr.add_argument("--group", action="append", required=True, help="CelesTrak group (repeatable)")
-    plr.add_argument("--hours", type=float, default=24.0)
-    plr.add_argument("--threshold", type=float, default=5.0)
-    plr.add_argument("--hbr-m", type=float, default=10.0)
-    plr.add_argument("--no-calibrate", action="store_true", help="Skip recalibration")
-    plr.add_argument("--refresh", action="store_true", help="Ignore the 2-hour data cache")
-    plr.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
-    plr.add_argument("--db-url", default=None, help=DB_URL_HELP)
+    pls = pl_sub.add_parser("schedule", help="Run the pipeline repeatedly until stopped")
+    pls.add_argument("--every-hours", type=float, default=6.0,
+                     help="Interval between run starts (minimum 2 h)")
+    for parser_ in (plr, pls):
+        parser_.add_argument("--group", action="append", required=True,
+                             help="CelesTrak group (repeatable)")
+        parser_.add_argument("--hours", type=float, default=24.0)
+        parser_.add_argument("--threshold", type=float, default=5.0)
+        parser_.add_argument("--hbr-m", type=float, default=10.0)
+        parser_.add_argument("--no-calibrate", action="store_true", help="Skip recalibration")
+        parser_.add_argument("--refresh", action="store_true", help="Ignore the 2-hour data cache")
+        parser_.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+        parser_.add_argument("--db-url", default=None, help=DB_URL_HELP)
     plr.set_defaults(func=_cmd_pipeline_run)
+    pls.set_defaults(func=_cmd_pipeline_schedule)
 
     db = sub.add_parser("db", help="Results database")
     db_sub = db.add_subparsers(dest="db_command", required=True)
