@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from orbitguard.cdm.cli import add_risk_parser
-from orbitguard.calibration import calibrate_from_cache
+from orbitguard.calibration import MAX_PAIR_AGE_DAYS, calibrate_from_cache
 from orbitguard.covariance import (
     DEFAULT_MODEL, CovarianceModel, PopulationCovariance, load_covariance,
 )
@@ -203,8 +203,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _cmd_calibrate(args: argparse.Namespace) -> int:
     fitted = calibrate_from_cache(args.cache_dir)
     if fitted is None:
-        print(f"Need at least two cached snapshots of a group in {args.cache_dir}; "
-              "run `orbitguard screen` again after CelesTrak publishes new data.")
+        print(f"Need two cached snapshots of a group in {args.cache_dir}, fetched at most "
+              f"{MAX_PAIR_AGE_DAYS:g} days apart; run `orbitguard screen` again after "
+              "CelesTrak publishes new data.")
         return 1
     model, summaries, n_pairs = fitted
 
