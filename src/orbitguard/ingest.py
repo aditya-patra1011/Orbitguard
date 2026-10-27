@@ -54,6 +54,14 @@ def _cache_files(cache_dir: Path, group: str) -> list[Path]:
     return sorted(cache_dir.glob(f"gp_{group}_*.json"))
 
 
+def prune_snapshots(cache_dir: Path, group: str, keep: int) -> list[Path]:
+    """Delete all but the newest ``keep`` cached snapshots of a group; return the deleted."""
+    old = _cache_files(cache_dir, group)[:-keep] if keep > 0 else []
+    for path in old:
+        path.unlink()
+    return old
+
+
 def fetch_group(
     group: str,
     cache_dir: Path = DEFAULT_CACHE_DIR,

@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Iterable
 
 from sqlalchemy import (
-    Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, func, insert,
-    select,
+    Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func,
+    insert, select, text,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
@@ -113,6 +113,13 @@ def list_pipeline_runs(session: Session, limit: int = 20,
     return list(session.scalars(stmt))
 
 
+def compact(engine: Engine) -> None:
+    """Give freed space back to the file system. SQLite only; PostgreSQL reuses it itself."""
+    if engine.dialect.name == "sqlite":
+        with engine.connect() as conn:
+            conn.execute(text("VACUUM"))
+
+
 def database_url() -> str:
     return os.environ.get("ORBITGUARD_DB_URL", DEFAULT_DB_URL)
 
@@ -190,6 +197,17 @@ def save_run_elements(session: Session, run_id: int, objects: list[dict],
     for old in session.scalars(select(RunElements).where(RunElements.run_id.not_in(keep))):
         session.delete(old)
     session.flush()
+
+
+def prune_conjunctions(session: Session, keep_runs: int) -> int:
+    """Delete the conjunctions of all but the latest ``keep_runs`` runs; return how many.
+
+    A run's conjunctions are ~10 MB, so a scheduled pipeline would otherwise grow the
+    database by ~1 GB a month. Run rows (with their counts) and pipeline history are kept.
+    """
+    keep = select(Run.id).order_by(Run.generated_at.desc()).limit(keep_runs)
+    result = session.execute(delete(ConjunctionRow).where(ConjunctionRow.run_id.not_in(keep)))
+    return result.rowcount or 0
 
 
 def get_run_elements(session: Session, run_id: int) -> list[dict] | None:

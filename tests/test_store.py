@@ -5,8 +5,8 @@ import pytest
 from sqlalchemy.orm import Session
 
 from orbitguard.store import (
-    ConjunctionQuery, get_run_elements, import_files, latest_run, list_runs, make_engine,
-    query_conjunctions, save_result, save_run_elements,
+    ConjunctionQuery, compact, get_run_elements, import_files, latest_run, list_runs, make_engine,
+    prune_conjunctions, query_conjunctions, save_result, save_run_elements,
 )
 
 
@@ -101,3 +101,16 @@ def test_element_sets_are_kept_only_for_the_latest_runs():
         assert get_run_elements(session, ids[0]) is None           # pruned
         assert get_run_elements(session, ids[2])[0]["norad_id"] == 22
         assert len(list_runs(session)) == 3                         # runs themselves are kept
+
+
+def test_old_runs_lose_their_conjunctions_but_not_their_record():
+    engine = make_engine("sqlite://")
+    with Session(engine) as session:
+        old = save_result(session, result("2026-10-20T00:00:00+00:00"))
+        new = save_result(session, result("2026-10-21T00:00:00+00:00"))
+        assert prune_conjunctions(session, keep_runs=1) == 4
+        session.commit()
+        assert query_conjunctions(session, ConjunctionQuery(run_id=old.id, include_co_orbital=True))[0] == 0
+        assert query_conjunctions(session, ConjunctionQuery(run_id=new.id, include_co_orbital=True))[0] == 4
+        assert {r.n_conjunctions for r in list_runs(session)} == {4}   # counts survive
+    compact(engine)   # SQLite VACUUM runs without error
