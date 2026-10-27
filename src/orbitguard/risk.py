@@ -17,6 +17,8 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.special import ndtr
 
+PC_ABS_TOL = 1e-20  # far below any Pc that matters (alerts start at 1e-4)
+
 
 def encounter_plane(dr: np.ndarray, dv: np.ndarray) -> np.ndarray:
     """Return a (2, 3) matrix whose rows span the plane perpendicular to ``dv``.
@@ -45,6 +47,10 @@ def collision_probability(dr: np.ndarray, dv: np.ndarray, cov: np.ndarray, hbr_k
     if var.min() <= 0:
         raise ValueError("Projected covariance must be positive definite")
     mx, my = axes.T @ mean
+    # The chord mass is symmetric in my. With my > 0 both ndtr terms below sit in the
+    # lower tail, where they are accurate; with my << 0 both would be ~1 and their
+    # difference would lose most of its digits.
+    my = abs(my)
     sx, sy = np.sqrt(var)
 
     def strip(x: float) -> float:
@@ -53,6 +59,8 @@ def collision_probability(dr: np.ndarray, dv: np.ndarray, cov: np.ndarray, hbr_k
         density = np.exp(-0.5 * ((x - mx) / sx) ** 2) / (sx * np.sqrt(2 * np.pi))
         return density * (ndtr((h - my) / sy) - ndtr((-h - my) / sy))
 
+    # The absolute floor matters only for far misses (Pc ~1e-12 down to 1e-300): there a
+    # purely relative target is below floating-point roundoff and quad warns.
     points = [mx] if -hbr_km < mx < hbr_km else None
-    pc, _ = quad(strip, -hbr_km, hbr_km, points=points, epsabs=0.0, epsrel=1e-9, limit=200)
+    pc, _ = quad(strip, -hbr_km, hbr_km, points=points, epsabs=PC_ABS_TOL, epsrel=1e-9, limit=200)
     return float(min(max(pc, 0.0), 1.0))
