@@ -114,7 +114,8 @@ def _pipeline_config(args: argparse.Namespace):
 
     return PipelineConfig(groups=args.group, hours=args.hours, threshold_km=args.threshold,
                           hbr_m=args.hbr_m, cache_dir=args.cache_dir,
-                          calibrate=not args.no_calibrate, refresh=args.refresh)
+                          calibrate=not args.no_calibrate, refresh=args.refresh,
+                          keep_runs=args.keep_runs or None)
 
 
 def _cmd_pipeline_schedule(args: argparse.Namespace) -> int:
@@ -300,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
         parser_.add_argument("--no-calibrate", action="store_true", help="Skip recalibration")
         parser_.add_argument("--refresh", action="store_true", help="Ignore the 2-hour data cache")
         parser_.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+        parser_.add_argument("--keep-runs", type=int, default=20,
+                             help="Runs that keep their conjunctions, ~10 MB each (0: keep all)")
         parser_.add_argument("--db-url", default=None, help=DB_URL_HELP)
     plr.set_defaults(func=_cmd_pipeline_run)
     pls.set_defaults(func=_cmd_pipeline_schedule)

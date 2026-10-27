@@ -232,6 +232,9 @@ function renderStatus(run, pipeline, nAlerts) {
   stat("Close approaches", `${run.n_conjunctions.toLocaleString()} under ${run.threshold_km} km`);
   stat(`Pc ≥ 10⁻⁴`, nAlerts === null ? "n/a" : String(nAlerts));
   stat("Window", `${run.window_hours} h from ${fmtUtc(when)}`);
+  // Pc depends on it: until two snapshots exist, the model is an assumption, not a measurement.
+  const measured = (run.covariance_source || "").startsWith("calibrated");
+  stat("Uncertainty", measured ? "measured from the data" : "assumed: not yet calibrated");
   box.append(grid);
 
   if (pipeline) {
