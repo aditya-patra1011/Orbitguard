@@ -1,8 +1,12 @@
 # OrbitGuard
 
 [![CI](https://github.com/aditya-patra1011/Orbitguard/actions/workflows/ci.yml/badge.svg)](https://github.com/aditya-patra1011/Orbitguard/actions/workflows/ci.yml)
+[![Dashboard](https://github.com/aditya-patra1011/Orbitguard/actions/workflows/pages.yml/badge.svg)](https://github.com/aditya-patra1011/Orbitguard/actions/workflows/pages.yml)
 
 Orbital conjunction screening and ML-based collision risk assessment for objects in Earth orbit.
+
+**Live dashboard: [aditya-patra1011.github.io/Orbitguard](https://aditya-patra1011.github.io/Orbitguard/)**,
+refreshed every 6 hours.
 
 OrbitGuard pulls the latest public orbital element sets, propagates every object with SGP4,
 finds close approaches between all pairs, and scores each one with a probability of collision
@@ -10,10 +14,12 @@ finds close approaches between all pairs, and scores each one with a probability
 trained on ESA's real conjunction data messages, forecasts an event's final risk two days
 before closest approach. Both are served by an HTTP API, packaged with Docker and PostgreSQL, and
 a scheduled pipeline refreshes the data every 6 hours, validates it, recalibrates the
-uncertainty and watches its own metrics for drift.
+uncertainty and watches its own metrics for drift. A 3-D globe dashboard shows every screened
+object and replays the riskiest encounters.
 
 ```
-docker compose up -d --build        # PostgreSQL + API on http://localhost:8000 (docs at /docs)
+cp .env.example .env                # then set POSTGRES_PASSWORD in .env
+docker compose up -d --build        # PostgreSQL + API + dashboard on http://localhost:8000 (API docs at /docs)
 ```
 
 ## What works today
@@ -226,10 +232,59 @@ fetch ──► validate ──► recalibrate ──► screen ──► store 
 A typical scheduled run in Docker: 14,394 objects screened in about 200 s, roughly 66,000
 conjunctions under 5 km, 8 or 9 events with Pc ≥ 1e-4, all validation checks passing.
 
+## Phase 6: dashboard and free public hosting
+
+**The dashboard** (served by the API at `/`, and published as a static site):
+
+- Every screened object on a 3-D globe (CesiumJS), coloured by population and animated in real
+  time. A Web Worker propagates all ~14,400 objects with SGP4 (satellite.js) every 250 ms from the
+  **exact element sets the run screened**, which are now stored with each run.
+- Run and pipeline status, whether Pc used measured or assumed uncertainty, and the
+  highest-risk encounters filtered by Pc.
+- Selecting an encounter draws both orbits, marks the closest approach and replays the pass in
+  real time. The miss distance is **recomputed independently in the browser** and compared with
+  the server's value (102 m against 102 m for the top event).
+
+**Hosted for free.** A scheduled GitHub Actions workflow (free for public repositories) runs the
+same pipeline as the Docker scheduler and publishes the result to GitHub Pages:
+
+```
+every 6 h:  restore cache (snapshots, uncertainty model, small SQLite history)
+            -> orbitguard pipeline run -> orbitguard export-site -> save cache -> GitHub Pages
+```
+
+`orbitguard export-site` writes the dashboard plus three JSON files (summary, the 1,000
+highest-Pc encounters, element sets) using the API's own response models, so the page reads
+them exactly as it reads the live API. A failed run is still published: the dashboard shows the
+failure with the last good data, and the workflow turns red. The public site is static, so there
+is no server to pay for or attack; the full API stays available locally and in Docker.
+
+**Hardened for exposure** (all opt-in locally; `ORBITGUARD_PUBLIC=1` makes them mandatory, and
+the API refuses to start without them):
+
+| Protection | Detail |
+|---|---|
+| API key | `POST /risk/forecast` needs `X-API-Key` (constant-time check); reading stays public |
+| Rate limits | 120 requests/min per client, a tenth for the forecast and the 1 MB element download; `Retry-After` on 429 |
+| Request size | Bodies capped at 6 MB, also for chunked uploads; at most 100 events per forecast (a real event is ~45 KB) |
+| Browser | Content security policy with no inline scripts, CDN files pinned by integrity hash, `X-Frame-Options`, `nosniff` |
+| Secrets | Compose requires `POSTGRES_PASSWORD` from a git-ignored `.env`; `.env` is kept out of the image |
+| Retention | Conjunctions kept for the latest 20 runs and 8 snapshots per group, so an unattended pipeline does not fill its disk |
+
+**Found by testing it in a browser:** the encounter pass at 5× speed lasted about a second
+(now real time from T−20 s, with a fixed view of the closest-approach point and a countdown); a
+strict security policy stopped Cesium from rendering at all (its widgets compile templates with
+`new Function` and it loads WebAssembly, so the policy allows eval for scripts, from this site
+and the pinned CDN only); and the export failed on Windows until files were written as UTF-8.
+
 ## Honest limitations
 
-- **The API has no authentication** and the Compose file uses a default database password: it is
-  built for local use. Public deployment (Phase 6) needs auth, TLS and secrets management.
+- **The public site is static.** It shows the latest run; the API (`/docs`, forecasts, run
+  history) runs locally or in Docker. GitHub disables scheduled workflows after 60 days without
+  repository activity, scheduled runs can start late, and CelesTrak may limit downloads from
+  GitHub's shared runner addresses (the run then fails visibly instead of publishing stale data
+  as new). A fresh cache's first run has no earlier snapshot to calibrate from, so its Pc uses
+  the assumed uncertainty, and the dashboard says so.
 - **The ML model does not yet beat the naive forecast.** It ties it, catches more dangerous
   events and loses a little on value accuracy; removing time-proxy features is the next step.
 - **CDM data is not available for OrbitGuard's own screening.** CDMs include operator orbit
@@ -263,7 +318,8 @@ conjunctions under 5 km, 8 or 9 events with Pc ≥ 1e-4, all validation checks p
 | 3 ✅ | ML risk model | ESA CDM data; exact reproduction of the competition metric and baselines; latest-risk backbone with learned value and late-riser corrections; pre-registered, one-time test evaluation |
 | 4 ✅ | Serving | Results database (SQLite / PostgreSQL), FastAPI service for conjunctions and risk forecasts, Docker image and Compose stack |
 | 5 ✅ | Pipeline + MLOps | Data validation, one-command pipeline with run records and metrics, drift monitoring, 6-hourly scheduler in Docker, download retries, CI (tests + Docker smoke test) |
-| 6 | Dashboard | 3-D globe (CesiumJS) with live high-risk events, deployed publicly |
+| 6 ✅ | Dashboard | 3-D globe (CesiumJS) of every screened object with encounter replay; free public hosting (GitHub Actions + Pages); API keys, rate limits, security headers, secrets, retention |
+| next | Hardening the ML side | Drift notifications, a retraining pipeline with champion/challenger evaluation and model versions, a risk model without time-proxy features |
 
 ## Development
 
