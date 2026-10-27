@@ -10,12 +10,8 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-
 from orbitguard.cdm.cli import add_risk_parser
-from orbitguard.calibration import (
-    Residuals, compute_residuals, fit_populations, load_snapshot_pairs,
-)
+from orbitguard.calibration import calibrate_from_cache
 from orbitguard.covariance import (
     DEFAULT_MODEL, CovarianceModel, PopulationCovariance, load_covariance,
 )
@@ -111,6 +107,36 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _cmd_pipeline_run(args: argparse.Namespace) -> int:
+    from orbitguard.pipeline import PipelineConfig, run_pipeline
+    from orbitguard.store import make_engine
+
+    cfg = PipelineConfig(groups=args.group, hours=args.hours, threshold_km=args.threshold,
+                         hbr_m=args.hbr_m, cache_dir=args.cache_dir,
+                         calibrate=not args.no_calibrate, refresh=args.refresh)
+    out = run_pipeline(cfg, make_engine(args.db_url))
+    print(f"Pipeline run {out.pipeline_run_id}: {out.status.upper()}")
+    for report in out.validation:
+        problems = [c for c in report["checks"] if not c["passed"]]
+        print(f"  validate {report['group']:<20} {report['n_records']:>6} records"
+              + ("" if not problems else "  " + "; ".join(f"{c['severity']}: {c['name']}" for c in problems)))
+    m = out.metrics
+    if out.status == "success":
+        print(f"  screened {m['objects_screened']} objects: {m['conjunctions']} conjunctions, "
+              f"{m['high_risk_events']} with Pc >= 1e-4 (stored as run {out.run_id}, "
+              f"{m['screening_seconds']} s)")
+        if "calibrated_sigma_t_2d_km" in m:
+            sig = ", ".join(f"{k} {v} km" for k, v in m["calibrated_sigma_t_2d_km"].items())
+            print(f"  recalibrated from {m['calibration_pairs']} snapshot pairs: along-track 1-sigma at 2 days: {sig}")
+        for a in out.drift_alerts:
+            print(f"  DRIFT {a['metric']}: {a['value']} vs median {a['baseline_median']} (z {a['robust_z']})")
+        if not out.drift_alerts:
+            print("  drift: none detected" + (f" ({out.message})" if out.message else ""))
+    else:
+        print(f"  {out.message}")
+    return 0 if out.status == "success" else 1
+
+
 def _cmd_db_import(args: argparse.Namespace) -> int:
     from sqlalchemy.orm import Session
 
@@ -141,24 +167,15 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 
 def _cmd_calibrate(args: argparse.Namespace) -> int:
-    pairs = load_snapshot_pairs(args.cache_dir)
-    if not pairs:
+    fitted = calibrate_from_cache(args.cache_dir)
+    if fitted is None:
         print(f"Need at least two cached snapshots of a group in {args.cache_dir}; "
               "run `orbitguard screen` again after CelesTrak publishes new data.")
         return 1
-    parts = [compute_residuals(old, new) for old, new in pairs]
-    res = Residuals(
-        norad_ids=np.concatenate([p.norad_ids for p in parts]),
-        names=[n for p in parts for n in p.names],
-        age_days=np.concatenate([p.age_days for p in parts]),
-        rtn_km=np.concatenate([p.rtn_km for p in parts]),
-    )
-    today = datetime.now(timezone.utc)
-    model, summaries = fit_populations(
-        res, source=f"calibrated {today:%Y-%m-%d} from {len(res.age_days)} element-set pairs")
+    model, summaries, n_pairs = fitted
 
     pooled = summaries["pooled"]
-    print(f"\n{pooled['residuals']} residuals from {len(pairs)} snapshot pairs, "
+    print(f"\n{pooled['residuals']} residuals from {n_pairs} snapshot pairs, "
           f"ages {pooled['age_days_range'][0]:.2f}-{pooled['age_days_range'][1]:.2f} days\n")
     print(f"{'population':<10} {'n':>6} {'outliers':>8}   {'sigma0 R,T,N (km)':<24} "
           f"{'growth R,T,N (km/day)':<24} {'sigma T @ 2 d':>12}")
@@ -216,6 +233,19 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     v.add_argument("--all", dest="verbose_checks", action="store_true", help="Show passing checks too")
     v.set_defaults(func=_cmd_validate)
+
+    pl = sub.add_parser("pipeline", help="Fetch, validate, recalibrate, screen, store, monitor")
+    pl_sub = pl.add_subparsers(dest="pipeline_command", required=True)
+    plr = pl_sub.add_parser("run", help="Run the pipeline once (exit code 1 unless it succeeds)")
+    plr.add_argument("--group", action="append", required=True, help="CelesTrak group (repeatable)")
+    plr.add_argument("--hours", type=float, default=24.0)
+    plr.add_argument("--threshold", type=float, default=5.0)
+    plr.add_argument("--hbr-m", type=float, default=10.0)
+    plr.add_argument("--no-calibrate", action="store_true", help="Skip recalibration")
+    plr.add_argument("--refresh", action="store_true", help="Ignore the 2-hour data cache")
+    plr.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    plr.add_argument("--db-url", default=None, help=DB_URL_HELP)
+    plr.set_defaults(func=_cmd_pipeline_run)
 
     db = sub.add_parser("db", help="Results database")
     db_sub = db.add_subparsers(dest="db_command", required=True)

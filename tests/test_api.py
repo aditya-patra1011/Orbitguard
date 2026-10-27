@@ -128,3 +128,24 @@ def test_unloadable_model_is_reported_and_api_still_serves(tmp_path, caplog):
         assert c.get("/health").json()["risk_model_loaded"] is False
         assert c.get("/conjunctions").status_code == 200
     assert "Could not load risk model" in caplog.text
+
+
+def test_pipeline_runs_endpoint(client):
+    from datetime import datetime, timezone
+    from orbitguard.store import save_pipeline_run
+    engine = client.app.state.engine
+    with Session(engine) as s:
+        save_pipeline_run(s, started_at=datetime(2026, 10, 27, tzinfo=timezone.utc),
+                          finished_at=datetime(2026, 10, 27, 0, 5, tzinfo=timezone.utc),
+                          status="success", groups="oneweb,starlink",
+                          metrics={"conjunctions": 10}, drift_alerts=[{"metric": "x"}])
+        save_pipeline_run(s, started_at=datetime(2026, 10, 27, 6, tzinfo=timezone.utc),
+                          finished_at=datetime(2026, 10, 27, 6, 1, tzinfo=timezone.utc),
+                          status="failed_validation", groups="oneweb", message="stable_count")
+        s.commit()
+    runs = client.get("/pipeline/runs").json()
+    assert [r["status"] for r in runs] == ["failed_validation", "success"]
+    assert runs[1]["groups"] == ["oneweb", "starlink"] and runs[1]["metrics"] == {"conjunctions": 10}
+    assert runs[1]["drift_alerts"] == [{"metric": "x"}]
+    assert len(client.get("/pipeline/runs", params={"status": "success"}).json()) == 1
+    assert client.get("/pipeline/runs", params={"status": "nope"}).status_code == 422
