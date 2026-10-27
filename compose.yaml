@@ -6,14 +6,19 @@
 #   docker compose --profile scheduler up -d         # also run the pipeline every 6 hours
 #   docker compose --profile scheduler down          # stop (data persists in the pgdata volume)
 #
-# Local development only: the database password defaults to "orbitguard" and the
-# database port is not published. Set POSTGRES_PASSWORD in a .env file to change it.
+# Secrets come from a .env file next to this one (never committed; see .env.example):
+# POSTGRES_PASSWORD is required, and Compose refuses to start without it. The database
+# port is not published. For a public deployment also set ORBITGUARD_PUBLIC=1 and
+# ORBITGUARD_API_KEYS: the API then refuses to start with weak settings.
 
 x-orbitguard: &orbitguard
   build: .
   image: orbitguard:latest
   environment:
-    ORBITGUARD_DB_URL: postgresql+psycopg://orbitguard:${POSTGRES_PASSWORD:-orbitguard}@db:5432/orbitguard
+    ORBITGUARD_DB_URL: postgresql+psycopg://orbitguard:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.example)}@db:5432/orbitguard
+    ORBITGUARD_PUBLIC: ${ORBITGUARD_PUBLIC:-0}
+    ORBITGUARD_API_KEYS: ${ORBITGUARD_API_KEYS:-}
+    ORBITGUARD_TRUST_PROXY: ${ORBITGUARD_TRUST_PROXY:-0}
   depends_on:
     db:
       condition: service_healthy
@@ -23,7 +28,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: orbitguard
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orbitguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.example)}
       POSTGRES_DB: orbitguard
     volumes:
       - pgdata:/var/lib/postgresql/data
