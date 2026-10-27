@@ -9,6 +9,7 @@
 const COLORS = { starlink: "#5aa9ff", oneweb: "#62d394", debris: "#ff8d4d", other: "#c8ccd4" };
 const LABELS = { starlink: "Starlink", oneweb: "OneWeb", debris: "Debris", other: "Other" };
 const ALERT_PC = 1e-4;          // the usual action threshold
+const ALERT_KEY = "1e-4";       // the same threshold as the filter writes it
 const UPDATE_MS = 250;          // how often the catalogue is re-propagated
 const TRACK_MIN = 50;           // minutes of orbit drawn either side of TCA
 
@@ -31,6 +32,43 @@ async function getJSON(path) {
   }
   return r.json();
 }
+
+// ------------------------------------------------------------------ data source
+// The same questions answered by the live API, or by the JSON files `orbitguard
+// export-site` writes for GitHub Pages (config.js sets ORBITGUARD_DATA = "static").
+// Thresholds are the strings used by the filter: "1e-4", "1e-6" or "0".
+
+const STATIC = window.ORBITGUARD_DATA === "static";
+
+const apiSource = {
+  latestRun: () => getJSON("/runs/latest"),
+  latestPipeline: () => getJSON("/pipeline/runs?limit=1").then((runs) => runs[0]),
+  count: (run, minPc) => getJSON(`/conjunctions?run_id=${run.id}&min_pc=${minPc}&limit=1`).then((p) => p.total),
+  elements: (run) => getJSON(`/runs/${run.id}/elements`),
+  events: (run, minPc, limit) =>
+    getJSON(`/conjunctions?run_id=${run.id}&min_pc=${minPc}&order_by=pc&limit=${limit}`),
+};
+
+const cached = {};
+const once = (path) => (cached[path] ??= getJSON(path));
+const staticSource = {
+  async latestRun() {
+    const summary = await once("data/summary.json");
+    if (!summary.run) throw new HttpError(404, "No screening runs yet");
+    return summary.run;
+  },
+  latestPipeline: async () => (await once("data/summary.json")).pipeline,
+  count: async (run, minPc) => (await once("data/summary.json")).counts[minPc] ?? null,
+  elements: () => once("data/elements.json"),
+  async events(run, minPc, limit) {
+    // The export holds the highest-Pc encounters; totals come from the summary.
+    const [summary, page] = await Promise.all([once("data/summary.json"), once("data/conjunctions.json")]);
+    const items = page.items.filter((c) => c.pc >= Number(minPc));
+    return { total: summary.counts[minPc] ?? items.length, items: items.slice(0, limit) };
+  },
+};
+
+const source = STATIC ? staticSource : apiSource;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -117,21 +155,21 @@ setInterval(() => {
 async function load() {
   let run;
   try {
-    run = await getJSON("/runs/latest");
+    run = await source.latestRun();
   } catch (e) {
     showMessage(e.status === 404 ? "No screening runs stored yet. Run `orbitguard pipeline run` first."
-                                 : `Could not reach the OrbitGuard API (${e.message}).`);
+                                 : `Could not load the screening data (${e.message}).`);
     return;
   }
   state.run = run;
   showRunWindow();
 
   const [pipeline, alerts, elements] = await Promise.all([
-    getJSON("/pipeline/runs?limit=1").catch(() => []),
-    getJSON(`/conjunctions?run_id=${run.id}&min_pc=${ALERT_PC}&limit=1`).catch(() => ({ total: null })),
-    getJSON(`/runs/${run.id}/elements`).catch((e) => ({ error: e })),
+    source.latestPipeline().catch(() => null),
+    source.count(run, ALERT_KEY).catch(() => null),
+    source.elements(run).catch((e) => ({ error: e })),
   ]);
-  renderStatus(run, pipeline[0], alerts.total);
+  renderStatus(run, pipeline, alerts);
 
   if (elements.error) {
     showMessage(elements.error.status === 404
@@ -166,7 +204,7 @@ async function loadEvents() {
   list.replaceChildren();
   let page;
   try {
-    page = await getJSON(`/conjunctions?run_id=${state.run.id}&min_pc=${minPc}&order_by=pc&limit=100`);
+    page = await source.events(state.run, minPc, 100);
   } catch (e) {
     note.textContent = `Could not load encounters (${e.message}).`;
     return;
@@ -420,5 +458,6 @@ viewer.clock.onTick.addEventListener((clock) => {
                                                                : Math.round(Math.abs(s) / 60) + " min"}`;
 });
 
+if (STATIC) document.getElementById("api-docs").hidden = true;   // no API behind a static site
 document.getElementById("threshold").addEventListener("change", () => { clearSelection(); loadEvents(); });
 load();
