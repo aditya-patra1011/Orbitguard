@@ -28,5 +28,8 @@ orbitguard = "orbitguard.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+orbitguard = ["web/*"]   # the dashboard, served by the API
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

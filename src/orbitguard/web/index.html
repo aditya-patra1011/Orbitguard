@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OrbitGuard</title>
+  <meta name="description" content="Live orbital conjunction screening with probability of collision, from public orbital data.">
+  <!-- Pinned versions. Cesium's bundled Natural Earth imagery is used, so no Cesium ion token is needed. -->
+  <script>window.CESIUM_BASE_URL = "https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/";</script>
+  <script src="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Cesium.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Widgets/widgets.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="globe"></div>
+
+  <aside id="panel">
+    <header>
+      <h1>OrbitGuard</h1>
+      <p class="sub">Close approaches between satellites and debris, screened from public orbital data</p>
+    </header>
+
+    <section id="status" class="card" aria-live="polite">
+      <p class="muted">Loading the latest screening run…</p>
+    </section>
+
+    <section id="legend" class="card"></section>
+
+    <section class="card events">
+      <div class="events-head">
+        <h2>Highest-risk encounters</h2>
+        <label class="visually-hidden" for="threshold">Minimum probability of collision</label>
+        <select id="threshold">
+          <option value="1e-4">Pc ≥ 10⁻⁴</option>
+          <option value="1e-6" selected>Pc ≥ 10⁻⁶</option>
+          <option value="0">All with a Pc</option>
+        </select>
+      </div>
+      <p id="events-note" class="muted small"></p>
+      <ol id="events"></ol>
+    </section>
+
+    <footer class="muted small">
+      Data: <a href="https://celestrak.org" target="_blank" rel="noopener">CelesTrak</a> GP element sets.
+      <a href="/docs" target="_blank" rel="noopener">API docs</a> ·
+      <a href="https://github.com/aditya-patra1011/Orbitguard" target="_blank" rel="noopener">Source</a>
+    </footer>
+  </aside>
+
+  <section id="detail" class="card" hidden></section>
+  <div id="message" role="alert" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
