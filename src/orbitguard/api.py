@@ -24,9 +24,10 @@ from sqlalchemy.orm import Session
 
 from orbitguard import __version__
 from orbitguard.covariance import population
+from orbitguard.security import SecurityMiddleware, SecuritySettings, require_api_key
 from orbitguard.store import (
-    ConjunctionQuery, ConjunctionRow, Run, get_run_elements, latest_run, list_pipeline_runs,
-    list_runs, make_engine, query_conjunctions,
+    ConjunctionQuery, ConjunctionRow, Run, database_url, get_run_elements, latest_run,
+    list_pipeline_runs, list_runs, make_engine, query_conjunctions,
 )
 
 log = logging.getLogger(__name__)
@@ -168,7 +169,8 @@ class CDMEvent(BaseModel):
 
 
 class RiskRequest(BaseModel):
-    events: list[CDMEvent] = Field(min_length=1, max_length=1000)
+    # Bounded together with the request-size limit (security.MAX_BODY_BYTES).
+    events: list[CDMEvent] = Field(min_length=1, max_length=100)
 
 
 class RiskForecast(BaseModel):
@@ -198,7 +200,12 @@ def get_session(request: Request):
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-def create_app(engine: Engine | None = None, risk_model_path: Path | None = None) -> FastAPI:
+def create_app(engine: Engine | None = None, risk_model_path: Path | None = None,
+               security: SecuritySettings | None = None) -> FastAPI:
+    security = security or SecuritySettings.from_env()
+    # Fail at startup, not on the first request, if public mode is misconfigured.
+    security.check(engine.url.render_as_string(hide_password=False) if engine else database_url())
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.engine = engine or make_engine()
@@ -214,8 +221,11 @@ def create_app(engine: Engine | None = None, risk_model_path: Path | None = None
                     "and final-risk forecasts for conjunction data messages.",
         lifespan=lifespan,
     )
+    app.state.security = security
     # Element sets for a full catalogue are ~3 MB of JSON; compressed they are ~1 MB.
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+    # Added last, so it runs first: over-limit requests are refused before any work.
+    app.add_middleware(SecurityMiddleware, settings=security)
 
     @app.get("/health", response_model=Health, tags=["service"])
     def health(request: Request, session: SessionDep):
@@ -319,7 +329,8 @@ def create_app(engine: Engine | None = None, risk_model_path: Path | None = None
         """Recent pipeline executions with validation reports, metrics and drift alerts."""
         return list_pipeline_runs(session, limit=limit, status=status)
 
-    @app.post("/risk/forecast", response_model=RiskResponse, tags=["risk model"])
+    @app.post("/risk/forecast", response_model=RiskResponse, tags=["risk model"],
+              dependencies=[Depends(require_api_key)])
     def risk_forecast(body: RiskRequest, request: Request):
         model = request.app.state.risk_model
         if model is None:

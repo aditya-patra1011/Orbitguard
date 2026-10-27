@@ -8,3 +8,6 @@ reports
 tests
 Dockerfile
 compose.yaml
+.env
+.env.*
+.claude
