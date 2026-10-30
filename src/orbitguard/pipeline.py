@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -74,8 +75,14 @@ class DriftAlert:
                 "baseline_median": self.baseline_median, "robust_z": round(self.robust_z, 2)}
 
 
+# Metrics that count events. Counts of rare events vary by about sqrt(n) on their own
+# (Poisson noise): 4 high-risk events after 7, 7 and 7 is ordinary, not a 9-sigma jump.
+COUNT_METRICS = ("objects_screened", "high_risk_events")
+
+
 def detect_drift(current: dict, history: list[dict], z_threshold: float = 3.0,
-                 min_history: int = 3, metrics=DRIFT_METRICS) -> list[DriftAlert]:
+                 min_history: int = 3, metrics=DRIFT_METRICS,
+                 count_metrics=COUNT_METRICS) -> list[DriftAlert]:
     """Robust z-score of each metric against its recent history (median / MAD)."""
     alerts = []
     for m in metrics:
@@ -85,8 +92,10 @@ def detect_drift(current: dict, history: list[dict], z_threshold: float = 3.0,
             continue
         med = median(past)
         mad = median(abs(x - med) for x in past)
-        # A perfectly stable history has MAD 0; floor the scale so tiny changes do not alert.
-        scale = max(1.4826 * mad, 0.05 * abs(med), 1e-9)
+        # A perfectly stable history has MAD 0; floor the scale so tiny changes do not alert,
+        # and never below Poisson noise for counts.
+        noise = math.sqrt(max(med, 1.0)) if m in count_metrics else 0.0
+        scale = max(1.4826 * mad, 0.05 * abs(med), noise, 1e-9)
         z = (value - med) / scale
         if abs(z) > z_threshold:
             alerts.append(DriftAlert(m, float(value), float(med), float(z)))
