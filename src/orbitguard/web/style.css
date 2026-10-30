@@ -52,6 +52,9 @@ h2 { margin: 0; font-size: 14px; font-weight: 600; }
 .stats dd.high { color: var(--high); font-weight: 600; }
 
 .pipeline { margin: 8px 0 0; }
+.drift { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; }
+.drift li { margin: 2px 0; }
+.drift li strong { font-weight: 600; color: #ffc46b; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .badge.ok { background: rgba(63, 191, 127, 0.18); color: var(--ok); }
 .badge.bad { background: rgba(255, 93, 93, 0.18); color: var(--high); }

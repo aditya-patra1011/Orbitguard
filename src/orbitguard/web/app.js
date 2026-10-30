@@ -243,9 +243,44 @@ function renderStatus(run, pipeline, nAlerts) {
     line.append(el("span", `badge ${ok ? "ok" : "bad"}`, ok ? "Pipeline healthy" : `Pipeline ${pipeline.status.replace("_", " ")}`));
     const drift = pipeline.drift_alerts.length;
     line.append(el("span", "muted small", ` last run ${fmtRelative(new Date(pipeline.finished_at))}, `
-      + (drift ? `${drift} drift alert${drift > 1 ? "s" : ""}` : "no drift")));
+      + (drift ? `${drift} drift alert${drift > 1 ? "s" : ""}:` : "no drift")));
     box.append(line);
+    if (drift) box.append(driftList(pipeline.drift_alerts));
   }
+}
+
+// How each monitored metric reads in plain language, and what a rise or fall suggests.
+const DRIFT_METRICS = {
+  objects_screened: {
+    label: "Objects screened", fmt: (v) => Math.round(v).toLocaleString(),
+    up: "more objects than usual", down: "fewer objects than usual: a group may have shrunk or failed to load",
+  },
+  conjunctions_per_1000_objects: {
+    label: "Close approaches per 1,000 objects", fmt: (v) => Math.round(v).toLocaleString(),
+    up: "more crowded than usual", down: "fewer close approaches than usual",
+  },
+  high_risk_events: {
+    label: "Encounters with Pc ≥ 10⁻⁴", fmt: (v) => String(Math.round(v)),
+    up: "more high-risk encounters than usual", down: "fewer high-risk encounters than usual",
+  },
+  median_element_age_days: {
+    label: "Median age of the orbital data", fmt: (v) => `${(v * 24).toFixed(1)} h`,
+    up: "older data than usual: the source may not be updating", down: "fresher data than usual",
+  },
+};
+
+function driftList(alerts) {
+  const list = el("ul", "drift");
+  for (const a of alerts) {
+    const info = DRIFT_METRICS[a.metric] || { label: a.metric, fmt: (v) => v.toPrecision(3), up: "higher than usual", down: "lower than usual" };
+    const item = el("li");
+    item.append(el("strong", null, info.label), el("span", null,
+      `: ${info.fmt(a.value)}, usually ${info.fmt(a.baseline_median)} (${a.robust_z > 0 ? info.up : info.down})`));
+    list.append(item);
+  }
+  list.append(el("li", "muted small",
+    "Drift means a number left its usual range over the last 10 runs. It is a prompt to look, not necessarily an error."));
+  return list;
 }
 
 function renderLegend(counts) {

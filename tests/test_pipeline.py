@@ -121,6 +121,18 @@ def test_detect_drift_is_robust_to_one_outlier_in_history():
     assert alert.baseline_median == 100 and alert.robust_z > 3
 
 
+def test_small_counts_drift_only_beyond_poisson_noise():
+    # Run 4 on GitHub: 4 high-risk events after 170 (uncalibrated first run), 7 and 7.
+    # Without a noise floor that was z = -8.6; Poisson noise around 7 is ~2.6.
+    history = [{"high_risk_events": v} for v in (170, 7, 7)]
+    assert detect_drift({"high_risk_events": 4}, history, metrics=("high_risk_events",)) == []
+    alert = detect_drift({"high_risk_events": 30}, history, metrics=("high_risk_events",))[0]
+    assert alert.robust_z > 3                       # a real jump still alerts
+    # A non-count metric keeps the tighter scale.
+    ages = [{"age": v} for v in (0.85, 0.85, 0.85)]
+    assert detect_drift({"age": 0.5}, ages, metrics=("age",))[0].robust_z < -3
+
+
 def test_detect_drift_needs_minimum_history():
     assert detect_drift({"m": 1e9}, [{"m": 1}, {"m": 1}], metrics=("m",)) == []
 
